@@ -31,6 +31,10 @@ enum ApiErrorType {
   connection,
   timeout,
   validation,
+  invalidPassword,
+  invalidFile,
+  payloadTooLarge,
+  incompatibleVersion,
   server,
   notFound,
   unknown,
@@ -246,8 +250,12 @@ class ApiService {
     );
   }
 
-  Future<Uint8List> downloadBackup() {
-    return _download('/api/data/backup');
+  Future<Uint8List> downloadBackup({required String password}) {
+    return _download(
+      '/api/data/backup',
+      method: 'POST',
+      jsonBody: {'password': password},
+    );
   }
 
   Future<Uint8List> downloadExport() {
@@ -257,11 +265,15 @@ class ApiService {
   Future<void> restoreBackup({
     required String filename,
     required Uint8List bytes,
+    String? password,
   }) async {
     await _multipartFileRequest(
       '/api/data/restore',
       filename: filename,
       bytes: bytes,
+      fields: {
+        if (password != null) 'password': password,
+      },
     );
   }
 
@@ -761,10 +773,19 @@ class ApiService {
     String path, {
     required String filename,
     required Uint8List bytes,
+    Map<String, String> fields = const {},
   }) async {
     final boundary = 'relationship-os-${DateTime.now().microsecondsSinceEpoch}';
     final builder = BytesBuilder();
     void writeText(String value) => builder.add(utf8.encode(value));
+    for (final entry in fields.entries) {
+      writeText('--$boundary\r\n');
+      writeText(
+        'Content-Disposition: form-data; name="${_escapeFormName(entry.key)}"'
+        '\r\n\r\n',
+      );
+      writeText('${entry.value}\r\n');
+    }
     writeText('--$boundary\r\n');
     writeText(
       'Content-Disposition: form-data; name="file"; '
@@ -782,11 +803,16 @@ class ApiService {
     return data as Map<String, dynamic>;
   }
 
-  Future<Uint8List> _download(String path) async {
+  Future<Uint8List> _download(
+    String path, {
+    String method = 'GET',
+    Map<String, dynamic>? jsonBody,
+  }) async {
     final client = _clientFactory()..connectionTimeout = _timeout;
     try {
-      final request =
-          await client.getUrl(Uri.parse('$baseUrl$path')).timeout(_timeout);
+      final request = await client
+          .openUrl(method, Uri.parse('$baseUrl$path'))
+          .timeout(_timeout);
       final token = _token;
       if (token == null) {
         throw const ApiException(
@@ -796,17 +822,24 @@ class ApiService {
         );
       }
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      if (jsonBody != null) {
+        request.headers.contentType = ContentType.json;
+        request.add(utf8.encode(jsonEncode(jsonBody)));
+      }
       final response = await request.close().timeout(_timeout);
       final bytes = await response.fold<BytesBuilder>(
         BytesBuilder(),
         (builder, chunk) => builder..add(chunk),
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw ApiException(
-          type: ApiErrorType.server,
-          statusCode: response.statusCode,
-          message: '下载失败，请稍后重试。',
-        );
+        final responseText = utf8.decode(bytes.toBytes(), allowMalformed: true);
+        dynamic data;
+        try {
+          data = jsonDecode(responseText);
+        } on FormatException {
+          data = responseText;
+        }
+        throw _responseException(response.statusCode, data, responseText);
       }
       return bytes.takeBytes();
     } on TimeoutException {
@@ -814,6 +847,17 @@ class ApiService {
         type: ApiErrorType.timeout,
         statusCode: 408,
         message: '下载超时，请稍后重试。',
+      );
+    } on SocketException {
+      throw const ApiException(
+        type: ApiErrorType.connection,
+        statusCode: 503,
+        message: '网络连接失败，无法连接本地服务。',
+      );
+    } on HandshakeException {
+      throw const ApiException(
+        type: ApiErrorType.connection,
+        message: '网络安全连接失败，请检查系统时间和网络设置。',
       );
     } finally {
       client.close(force: true);
@@ -828,19 +872,54 @@ class ApiService {
     final rawDetail = data is Map<String, dynamic>
         ? data['detail'] ?? data['message'] ?? responseText
         : responseText;
-    final detail = _localizedDetail(statusCode, rawDetail.toString());
-    final type = switch (statusCode) {
+    final rawDetailText = rawDetail.toString();
+    final normalized = rawDetailText.toLowerCase();
+    final type = _backupErrorType(statusCode, normalized);
+    final detail = _localizedDetail(statusCode, rawDetailText, type: type);
+    return ApiException(type: type, statusCode: statusCode, message: detail);
+  }
+
+  ApiErrorType _backupErrorType(int statusCode, String detail) {
+    if (statusCode == 413) return ApiErrorType.payloadTooLarge;
+    if (statusCode == 426 ||
+        detail.contains('version') ||
+        detail.contains('版本')) {
+      return ApiErrorType.incompatibleVersion;
+    }
+    if (detail.contains('password') ||
+        detail.contains('passphrase') ||
+        detail.contains('密码')) {
+      return ApiErrorType.invalidPassword;
+    }
+    if (detail.contains('backup') ||
+        detail.contains('archive') ||
+        detail.contains('zip') ||
+        detail.contains('file') ||
+        detail.contains('备份') ||
+        detail.contains('文件')) {
+      return ApiErrorType.invalidFile;
+    }
+    return switch (statusCode) {
       400 || 409 || 422 => ApiErrorType.validation,
       401 || 403 => ApiErrorType.authentication,
       404 => ApiErrorType.notFound,
       >= 500 => ApiErrorType.server,
       _ => ApiErrorType.unknown,
     };
-    return ApiException(type: type, statusCode: statusCode, message: detail);
   }
 
-  String _localizedDetail(int statusCode, String detail) {
+  String _localizedDetail(
+    int statusCode,
+    String detail, {
+    required ApiErrorType type,
+  }) {
     final normalized = detail.toLowerCase();
+    if (type == ApiErrorType.invalidPassword) return '备份密码无效，请重新输入。';
+    if (type == ApiErrorType.invalidFile) return '备份文件无效或已损坏。';
+    if (type == ApiErrorType.payloadTooLarge) return '备份文件过大，无法处理。';
+    if (type == ApiErrorType.incompatibleVersion) {
+      return '备份版本不兼容，请升级应用或选择其他备份。';
+    }
     if (statusCode == 401 || statusCode == 403) {
       return '账号或密码错误，或者登录状态已失效。';
     }
@@ -862,4 +941,6 @@ class ApiService {
         .replaceAll('\r', '')
         .replaceAll('\n', '');
   }
+
+  String _escapeFormName(String name) => _escapeFilename(name);
 }

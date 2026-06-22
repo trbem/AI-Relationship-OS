@@ -3,7 +3,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import get_settings
@@ -105,31 +105,3 @@ def _migrate_legacy_simulations() -> None:
                 )
             )
         db.commit()
-
-
-def _apply_additive_migrations() -> None:
-    inspector = inspect(engine)
-    table_names = set(inspector.get_table_names())
-    additions = {
-        "messages": {
-            "fingerprint": "VARCHAR(64)",
-            "import_task_id": "VARCHAR(36)",
-        },
-    }
-    with engine.begin() as connection:
-        for table, columns in additions.items():
-            if table not in table_names:
-                continue
-            existing = {column["name"] for column in inspector.get_columns(table)}
-            for column, sql_type in columns.items():
-                if column not in existing:
-                    connection.execute(
-                        text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
-                    )
-        if "messages" in table_names:
-            connection.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_message_fingerprint_idx "
-                    "ON messages(user_id, person_id, fingerprint)"
-                )
-            )

@@ -9,6 +9,8 @@ os.environ["RELATIONSHIP_OS_DATA_DIR"] = str(_TEST_DATA_DIR)
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TEST_DATA_DIR / 'test.db').as_posix()}"
 os.environ["LLM_API_KEY"] = ""
 os.environ["LLM_FALLBACK_ENABLED"] = "false"
+os.environ["OLLAMA_BASE_URL"] = "http://127.0.0.1:9"
+os.environ["OLLAMA_TIMEOUT_SECONDS"] = "0.05"
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:

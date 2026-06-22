@@ -20,6 +20,21 @@ $outputRoot = Join-Path $repoRoot "dist"
 $packageName = "RelationshipOS-Windows-x64-$Version"
 $packageRoot = Join-Path $outputRoot $packageName
 
+$pubspecText = Get-Content -Raw (Join-Path $frontendRoot "pubspec.yaml")
+if ($pubspecText -notmatch "(?m)^version:\s*([^+\r\n]+)") {
+    throw "Unable to read the Flutter version from frontend/pubspec.yaml."
+}
+$flutterVersion = $Matches[1].Trim()
+$backendConfigText = Get-Content -Raw `
+    (Join-Path $repoRoot "backend\app\config.py")
+if ($backendConfigText -notmatch 'app_version:\s*str\s*=\s*"([^"]+)"') {
+    throw "Unable to read the backend version from backend/app/config.py."
+}
+$backendVersion = $Matches[1]
+if ($flutterVersion -ne $Version -or $backendVersion -ne $Version) {
+    throw "Release version mismatch: requested=$Version, Flutter=$flutterVersion, backend=$backendVersion."
+}
+
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 [Environment]::SetEnvironmentVariable("PATH", $null, "Process")

@@ -196,10 +196,13 @@ def test_merge_backup_and_restore() -> None:
             "message_count"
         ] == 6
 
-        backup = client.get("/api/data/backup", headers=headers)
+        backup = client.post(
+            "/api/data/backup",
+            headers=headers,
+            json={"password": "backup-password"},
+        )
         assert backup.status_code == 200
-        with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
-            assert archive.namelist() == ["relationship-os-backup.json"]
+        assert backup.content.startswith(b"ROSBACKUP")
 
         with SessionLocal() as db:
             assert db.scalar(select(ImportTask)) is not None
@@ -214,7 +217,14 @@ def test_merge_backup_and_restore() -> None:
         restored = client.post(
             "/api/data/restore",
             headers=headers,
-            files={"file": ("backup.zip", backup.content, "application/zip")},
+            data={"password": "backup-password"},
+            files={
+                "file": (
+                    "backup.rosbackup",
+                    backup.content,
+                    "application/vnd.relationship-os.backup",
+                )
+            },
         )
         assert restored.status_code == 200
         assert restored.json()["persons"] == 1

@@ -11,10 +11,12 @@ class SettingsPage extends StatefulWidget {
     super.key,
     required this.apiService,
     required this.onLogout,
+    this.filePicker = const WindowsFilePicker(),
   });
 
   final ApiService apiService;
   final Future<void> Function() onLogout;
+  final WindowsFilePicker filePicker;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -29,7 +31,6 @@ class _SettingsPageState extends State<SettingsPage> {
   final _timeoutController = TextEditingController();
   final _temperatureController = TextEditingController();
   final _dataDirectoryController = TextEditingController();
-  final _filePicker = const WindowsFilePicker();
   bool _ollamaEnabled = true;
   bool _hasStoredApiKey = false;
   String _activeModelProvider = 'openai_compatible';
@@ -199,20 +200,24 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _chooseDataDirectory() async {
-    final path = await _filePicker.pickDirectory();
+    final path = await widget.filePicker.pickDirectory();
     if (path != null && mounted) {
       setState(() => _dataDirectoryController.text = path);
     }
   }
 
   Future<void> _backup() async {
+    final password = await _showBackupPasswordDialog();
+    if (password == null || !mounted) return;
     try {
-      final path = await _filePicker.pickSavePath(
-        filename: 'relationship-os-backup.zip',
-        filter: 'ZIP 备份 (*.zip)|*.zip',
+      final path = await widget.filePicker.pickSavePath(
+        filename: 'relationship-os-backup.rosbackup',
+        filter: '加密备份 (*.rosbackup)|*.rosbackup',
       );
       if (path == null) return;
-      await File(path).writeAsBytes(await widget.apiService.downloadBackup());
+      await File(path).writeAsBytes(
+        await widget.apiService.downloadBackup(password: password),
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('备份已保存到 $path')),
@@ -223,9 +228,77 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<String?> _showBackupPasswordDialog() async {
+    final passwordController = TextEditingController();
+    final confirmationController = TextEditingController();
+    String? validationMessage;
+    try {
+      return await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('创建加密备份'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('密码仅用于本次备份，不会被记录或保存。'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: passwordController,
+                  obscureText: true,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: '备份密码（至少 10 个字符）',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confirmationController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: '确认密码',
+                    border: const OutlineInputBorder(),
+                    errorText: validationMessage,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final password = passwordController.text;
+                  final confirmation = confirmationController.text;
+                  if (password.length < 10) {
+                    setDialogState(() => validationMessage = '密码至少需要 10 个字符。');
+                  } else if (password != confirmation) {
+                    setDialogState(() => validationMessage = '两次输入的密码不一致。');
+                  } else {
+                    Navigator.pop(dialogContext, password);
+                  }
+                },
+                child: const Text('继续'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        passwordController.dispose();
+        confirmationController.dispose();
+      });
+    }
+  }
+
   Future<void> _exportJson() async {
     try {
-      final path = await _filePicker.pickSavePath(
+      final path = await widget.filePicker.pickSavePath(
         filename: 'relationship-os-export.json',
         filter: 'JSON 数据 (*.json)|*.json',
       );
@@ -233,7 +306,7 @@ class _SettingsPageState extends State<SettingsPage> {
       await File(path).writeAsBytes(await widget.apiService.downloadExport());
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('数据已导出到 $path')),
+          SnackBar(content: Text('未加密 JSON 数据已导出到 $path')),
         );
       }
     } catch (error) {
@@ -242,31 +315,65 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _restore() async {
-    final selected = await _filePicker.pickBackupFile();
+    final selected = await widget.filePicker.pickBackupFile();
     if (selected == null || !mounted) return;
+    final encrypted = selected.name.toLowerCase().endsWith('.rosbackup');
+    final passwordController = TextEditingController();
+    String? password;
     final confirmed = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('恢复备份'),
-        content: const Text('恢复会替换当前账号的联系人、消息和记忆。是否继续？'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('恢复会替换当前账号的联系人、消息和记忆。'),
+            const SizedBox(height: 12),
+            if (encrypted)
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: '备份密码',
+                  border: OutlineInputBorder(),
+                ),
+              )
+            else
+              Text(
+                '警告：这是旧版未加密 ZIP 备份。',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () {
+              if (encrypted && passwordController.text.isEmpty) return;
+              password = encrypted ? passwordController.text : null;
+              Navigator.pop(context, true);
+            },
             child: const Text('恢复'),
           ),
         ],
       ),
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      passwordController.dispose();
+    });
     if (confirmed != true) return;
     try {
       final file = File(selected.path);
       await widget.apiService.restoreBackup(
         filename: selected.name,
         bytes: await file.readAsBytes(),
+        password: password,
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -471,7 +578,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     OutlinedButton.icon(
                       onPressed: _exportJson,
                       icon: const Icon(Icons.file_download_outlined),
-                      label: const Text('导出 JSON'),
+                      label: const Text('导出 JSON（未加密）'),
                     ),
                   ],
                 ),

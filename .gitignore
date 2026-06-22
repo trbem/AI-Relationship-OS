@@ -26,6 +26,7 @@ dist/
 .codex_appdata/
 .codex_localappdata/
 .dart-appdata/
+.dart-localappdata/
 .dart-local/
 .test-appdata/
 .tmpappdata/

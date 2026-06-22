@@ -1,10 +1,10 @@
 AI Relationship OS —— Windows 使用说明
 ========================================
 
-当前版本：v0.6.2
+当前版本：v0.7.0
 
 一、安装与启动
-1. 推荐运行 RelationshipOS-Setup-0.6.2.exe 完成安装。
+1. 推荐运行 RelationshipOS-Setup-0.7.0.exe 完成安装。
 2. 也可以解压 ZIP，但必须保留 relationship_os.exe、data、backend 和 DLL 的相对位置。
 3. 启动 AI Relationship OS。客户端会自动启动本机后端，并等待健康检查通过。
 4. 关闭客户端后，由客户端启动的后端进程会一并退出。
@@ -27,7 +27,10 @@ AI Relationship OS —— Windows 使用说明
 5. 群体推演：多角色多轮博弈模拟。
 6. 关系图谱：查看人物关系拓扑图、时间线和知识图谱。
 7. 人物世界：创建虚构/历史角色沙盘，外部知识搜索导入。
-8. 数据管理：JSON 导出、加密备份与恢复。
+8. 数据管理：明文 JSON 导出、密码加密 .rosbackup 备份与恢复，并兼容恢复旧版 ZIP。
+
+备份密码不会保存，忘记密码后无法恢复。.rosbackup 使用 AES-256-GCM 加密；
+本地 SQLite 数据库本身目前未整库加密，请保护 Windows 账号和数据目录。
 
 四、常见问题
 - 提示"未找到后端程序"：重新安装，或确认 backend\relationship_os_backend.exe 未被安全软件隔离。
@@ -36,12 +39,12 @@ AI Relationship OS —— Windows 使用说明
 - AI 调用失败：检查 API Key 和网络；可尝试切换到 Ollama 本地模式。
 
 五、开发者发布
-1. 安装 PyInstaller：backend\.venv\Scripts\python.exe -m pip install pyinstaller
+1. 安装锁定的构建依赖：backend\.venv\Scripts\python.exe -m pip install --require-hashes -r backend\requirements-build.txt
 2. 安装 Inno Setup 6。
 3. 在仓库根目录运行：
-   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.6.2
+   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.7.0
 4. 若只生成 ZIP：
-   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.6.2 -SkipInstaller
+   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.7.0 -SkipInstaller
 5. 发布目录会同时生成 ZIP、安装程序和 SHA256 校验文件。
 
 发布脚本直接调用 Flutter SDK 的 dart.exe 与 flutter_tools.snapshot，

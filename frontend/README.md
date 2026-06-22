@@ -1,6 +1,6 @@
 # AI Relationship OS —— Flutter 客户端
 
-当前版本：**v0.6.2**
+当前版本：**v0.7.0**
 
 ## 项目概述
 
@@ -58,7 +58,7 @@ flutter test
 前端由仓库根目录的构建脚本统一打包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.6.2
+powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.7.0
 ```
 
 构建产物包含 Flutter 编译的 `relationship_os.exe` 及所需 DLL。

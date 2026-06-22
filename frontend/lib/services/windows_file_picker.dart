@@ -47,7 +47,8 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   Future<SelectedFile?> pickBackupFile() {
     return _pickFile(
       title: '选择 Relationship OS 备份',
-      filter: 'ZIP 备份 (*.zip)|*.zip',
+      filter:
+          'Relationship OS 备份 (*.rosbackup;*.zip)|*.rosbackup;*.zip|加密备份 (*.rosbackup)|*.rosbackup|旧版 ZIP 备份 (*.zip)|*.zip',
     );
   }
 
