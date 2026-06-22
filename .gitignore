@@ -1,0 +1,38 @@
+# Local secrets
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/.venv/
+
+# Flutter and Dart
+.dart_tool/
+build/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+
+# Local runtime output
+*.log
+*.pid
+
+# Distribution artifacts (released via separate release branches)
+dist/
+
+# CodeBuddy local data
+.codex_appdata/
+.codex_localappdata/
+.dart-appdata/
+.dart-local/
+.test-appdata/
+.tmpappdata/
+.tmplocalappdata/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
