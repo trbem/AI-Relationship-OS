@@ -144,7 +144,7 @@ jobs:
           git diff --exit-code
 
       - name: Upload Windows release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: RelationshipOS-Windows-x64
           if-no-files-found: error
