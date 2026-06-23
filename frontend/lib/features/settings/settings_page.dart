@@ -30,6 +30,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _webSearchModelController = TextEditingController();
   final _webSearchTimeoutController = TextEditingController();
   String _provider = 'openai_compatible';
+  String _worldImportSearchProvider = 'free_web';
   final _modelController = TextEditingController();
   final _ollamaUrlController = TextEditingController();
   final _timeoutController = TextEditingController();
@@ -70,6 +71,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _webSearchModelController.text = settings.webSearchModel;
         _webSearchTimeoutController.text =
             settings.webSearchTimeoutSeconds.toString();
+        _worldImportSearchProvider = settings.worldImportSearchProvider;
         _ollamaEnabled = settings.ollamaEnabled;
         _ollamaUrlController.text = settings.ollamaBaseUrl;
         _timeoutController.text = settings.timeoutSeconds.toString();
@@ -106,6 +108,7 @@ class _SettingsPageState extends State<SettingsPage> {
         webSearchBaseUrl: _webSearchBaseUrlController.text.trim(),
         webSearchModel: _webSearchModelController.text.trim(),
         webSearchTimeoutSeconds: webSearchTimeout ?? _webSearchTimeout() ?? 120,
+        worldImportSearchProvider: _worldImportSearchProvider,
         ollamaEnabled: _ollamaEnabled,
         ollamaBaseUrl: _ollamaUrlController.text.trim(),
         timeoutSeconds: timeout,
@@ -141,9 +144,10 @@ class _SettingsPageState extends State<SettingsPage> {
       return;
     }
     final webSearchTimeout = _webSearchTimeout();
-    if (webSearchTimeout == null ||
-        webSearchTimeout < 10 ||
-        webSearchTimeout > 600) {
+    if (_worldImportSearchProvider == 'openai_web_search' &&
+        (webSearchTimeout == null ||
+            webSearchTimeout < 10 ||
+            webSearchTimeout > 600)) {
       setState(() =>
           _error = 'Web Search timeout must be between 10 and 600 seconds.');
       return;
@@ -151,7 +155,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final submittedWebSearchKey = _webSearchApiKeyController.text.trim();
     final webSearchConfigured =
         _hasStoredWebSearchApiKey || submittedWebSearchKey.isNotEmpty;
-    if (webSearchConfigured && _webSearchModelController.text.trim().isEmpty) {
+    if (_worldImportSearchProvider == 'openai_web_search' &&
+        webSearchConfigured &&
+        _webSearchModelController.text.trim().isEmpty) {
       setState(() => _error = 'Web Search Model cannot be empty.');
       return;
     }
@@ -178,6 +184,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _activeModelLabel = saved.activeModelLabel;
         _fallbackModelLabel = saved.fallbackModelLabel;
         _remoteConfigured = saved.remoteConfigured;
+        _worldImportSearchProvider = saved.worldImportSearchProvider;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -578,58 +585,87 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Text('OpenAI Web Search',
-                    style: Theme.of(context).textTheme.titleSmall),
+                Text('联网搜索导入', style: Theme.of(context).textTheme.titleSmall),
                 const SizedBox(height: 8),
-                TextField(
-                  controller: _webSearchApiKeyController,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    labelText: 'Web Search API Key',
-                    hintText: _hasStoredWebSearchApiKey
-                        ? 'Stored securely; leave blank to keep unchanged'
-                        : 'Enter API Key',
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _webSearchBaseUrlController,
+                DropdownButtonFormField<String>(
+                  initialValue: _worldImportSearchProvider,
                   decoration: const InputDecoration(
-                    labelText: 'Web Search Base URL',
-                    hintText: 'https://api.openai.com/v1',
+                    labelText: '导入搜索方式',
                     border: OutlineInputBorder(),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _webSearchModelController,
-                  decoration: const InputDecoration(
-                    labelText: 'Web Search Model',
-                    hintText:
-                        'Required, e.g. a Responses model with web search support',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _webSearchTimeoutController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Web Search Timeout (seconds)',
-                    border: OutlineInputBorder(),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'free_web',
+                      child: Text('免费网页搜索（默认）'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'openai_web_search',
+                      child: Text('OpenAI 原生 Web Search'),
+                    ),
+                  ],
+                  onChanged: (value) => setState(
+                    () => _worldImportSearchProvider = value ?? 'free_web',
                   ),
                 ),
                 const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: (_saving || _testingWebSearch)
-                      ? null
-                      : _testWebSearchConnection,
-                  icon: const Icon(Icons.travel_explore),
-                  label: Text(_testingWebSearch
-                      ? 'Testing Web Search...'
-                      : 'Test Web Search'),
+                Text(
+                  _worldImportSearchProvider == 'free_web'
+                      ? '免费网页搜索不需要额外 Key；系统会先搜索网页资料，再用当前 AI 模型提取人物世界。'
+                      : 'OpenAI 原生 Web Search 会使用 Responses API 的 web_search 工具。',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (_worldImportSearchProvider == 'openai_web_search') ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _webSearchApiKeyController,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                      labelText: 'Web Search API Key',
+                      hintText: _hasStoredWebSearchApiKey
+                          ? 'Stored securely; leave blank to keep unchanged'
+                          : 'Enter API Key',
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _webSearchBaseUrlController,
+                    decoration: const InputDecoration(
+                      labelText: 'Web Search Base URL',
+                      hintText: 'https://api.openai.com/v1',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _webSearchModelController,
+                    decoration: const InputDecoration(
+                      labelText: 'Web Search Model',
+                      hintText:
+                          'Required, e.g. a Responses model with web search support',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _webSearchTimeoutController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Web Search Timeout (seconds)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: (_saving || _testingWebSearch)
+                        ? null
+                        : _testWebSearchConnection,
+                    icon: const Icon(Icons.travel_explore),
+                    label: Text(_testingWebSearch
+                        ? 'Testing Web Search...'
+                        : 'Test Web Search'),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,

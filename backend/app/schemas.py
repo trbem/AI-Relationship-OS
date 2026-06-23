@@ -86,6 +86,7 @@ class SettingsUpdateRequest(BaseModel):
     web_search_base_url: str | None = Field(default=None, max_length=2048)
     web_search_model: str | None = Field(default=None, max_length=255)
     web_search_timeout_seconds: float | None = Field(default=None, ge=10, le=600)
+    world_import_search_provider: str | None = Field(default=None, max_length=64)
     data_directory: str | None = Field(default=None, max_length=2048)
 
     @field_validator("llm_provider")
@@ -96,6 +97,18 @@ class SettingsUpdateRequest(BaseModel):
         normalized = value.strip().lower()
         if normalized not in {"openai_compatible", "ollama"}:
             raise ValueError("llm_provider must be openai_compatible or ollama")
+        return normalized
+
+    @field_validator("world_import_search_provider")
+    @classmethod
+    def validate_world_import_search_provider(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().lower()
+        if normalized not in {"free_web", "openai_web_search"}:
+            raise ValueError(
+                "world_import_search_provider must be free_web or openai_web_search"
+            )
         return normalized
 
     @field_validator("llm_base_url", "ollama_base_url", "web_search_base_url")

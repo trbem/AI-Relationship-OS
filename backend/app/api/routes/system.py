@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -73,6 +73,7 @@ def _settings_response() -> dict:
         "web_search_base_url": settings.web_search_base_url,
         "web_search_model": settings.web_search_model,
         "web_search_timeout_seconds": settings.web_search_timeout_seconds,
+        "world_import_search_provider": settings.world_import_search_provider,
         "data_directory": str(get_data_dir()),
     }
 

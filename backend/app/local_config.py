@@ -31,6 +31,7 @@ ALLOWED_SETTINGS = {
     "web_search_base_url",
     "web_search_model",
     "web_search_timeout_seconds",
+    "world_import_search_provider",
     "jwt_secret",
 }
 

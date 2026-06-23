@@ -3,6 +3,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.free_web_search_service import FreeWebWorldSearchService
 from app.services.openai_web_search_service import OpenAIWebSearchService
 from app.services.world_ai_service import WorldAIService, _fallback_import_payload_v2
 from app.services.world_import_service import WorldImportService
@@ -248,6 +249,7 @@ def test_online_preview_confirm_deduplicates(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(OpenAIWebSearchService, "search_world", fake_search)
+    monkeypatch.setattr(FreeWebWorldSearchService, "search_world", fake_search)
     with TestClient(app) as client:
         headers = _register(client)
         world_id = _world(client, headers)
@@ -334,6 +336,7 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
         }
 
     monkeypatch.setattr(OpenAIWebSearchService, "search_world", empty_search)
+    monkeypatch.setattr(FreeWebWorldSearchService, "search_world", empty_search)
     monkeypatch.setattr(WorldAIService, "generated_import_preview", generated)
     with TestClient(app) as client:
         headers = _register(client)
@@ -365,6 +368,60 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
         )
         assert confirmed.status_code == 200
         assert confirmed.json()["imported_relationships"] == 1
+
+
+def test_world_import_defaults_to_free_web_provider(monkeypatch) -> None:
+    def fake_search(self, query: str, limit: int) -> dict:
+        return {
+            "query": query,
+            "provider": "free_web",
+            "source_type": "free_web",
+            "partial": False,
+            "errors": [],
+            "source_failures": [],
+            "relationships": [],
+            "candidates": [
+                {
+                    "id": "free-web-alice",
+                    "name": "Alice",
+                    "summary": "Source-backed summary.",
+                    "source_type": "free_web",
+                    "source_ref": "free-web-alice",
+                    "verification_status": "web_verified",
+                    "sources": [
+                        {
+                            "source_type": "free_web",
+                            "url": "https://example.test/alice",
+                            "title": "Alice",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(FreeWebWorldSearchService, "search_world", fake_search)
+    with TestClient(app) as client:
+        headers = _register(client)
+        world_id = _world(client, headers)
+        preview = client.post(
+            "/api/world-imports/search",
+            headers=headers,
+            json={"query": "Example World", "limit": 20},
+        )
+        assert preview.status_code == 202
+        task = _wait_world_import(client, headers, preview.json()["id"])
+        assert task["status"] == "preview"
+        assert task["result"]["provider"] == "free_web"
+        confirmed = client.post(
+            f'/api/world-imports/{task["id"]}/confirm',
+            headers=headers,
+            json={"world_id": world_id, "candidate_ids": ["free-web-alice"]},
+        )
+        assert confirmed.status_code == 200
+        detail = client.get(f"/api/worlds/{world_id}", headers=headers).json()
+        assert detail["personas"][0]["source_type"] == "free_web"
+
+
 def test_generated_fallback_prefers_three_kingdoms_seed_graph() -> None:
     candidates, relationships = _fallback_import_payload_v2("三国人物", 5, "zh")
     assert len(candidates) == 5

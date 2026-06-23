@@ -417,14 +417,27 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
 
   Future<void> _searchOnlineV08() async {
     final currentWorldId = _world?['id']?.toString();
+    var provider = 'free_web';
+    try {
+      final settings = await widget.apiService.fetchSettings();
+      provider = settings.worldImportSearchProvider;
+    } catch (_) {
+      provider = 'free_web';
+    }
     final query = TextEditingController();
     final newWorldName = TextEditingController(
       text: _world?['name']?.toString() ?? '',
     );
     double limit = 20;
     var importMode = currentWorldId == null ? 'create' : 'append';
-    final request =
-        await showDialog<({String query, int limit, String mode, String name})>(
+    final request = await showDialog<
+        ({
+          String query,
+          int limit,
+          String mode,
+          String name,
+          String provider,
+        })>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -441,6 +454,33 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                     labelText: 'Topic',
                     hintText: 'e.g. Greek mythology, Three Kingdoms',
                   ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: provider,
+                  decoration: const InputDecoration(
+                    labelText: 'Search provider',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'free_web',
+                      child: Text('Free web search + current AI model'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'openai_web_search',
+                      child: Text('OpenAI native Web Search'),
+                    ),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => provider = value ?? 'free_web'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  provider == 'free_web'
+                      ? 'Searches public web pages first, then asks your current AI model to extract characters.'
+                      : 'Uses OpenAI Responses API native web_search configuration.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -506,6 +546,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                     limit: limit.round().clamp(1, 50).toInt(),
                     mode: importMode,
                     name: trimmedName.isEmpty ? trimmedQuery : trimmedName,
+                    provider: provider,
                   ),
                 );
               },
@@ -524,6 +565,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       var task = await widget.apiService.searchWorldImport(
         query: request.query,
         limit: request.limit,
+        provider: request.provider,
       );
       task = await _pollWorldImportTask(task);
       if (!mounted) return;

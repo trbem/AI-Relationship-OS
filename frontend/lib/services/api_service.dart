@@ -593,11 +593,12 @@ class ApiService {
   Future<Map<String, dynamic>> searchWorldImport({
     required String query,
     int limit = 20,
+    String provider = 'free_web',
   }) async {
     return await _jsonRequest(
       'POST',
       '/api/world-imports/search',
-      body: {'query': query, 'limit': limit},
+      body: {'query': query, 'limit': limit, 'provider': provider},
     ) as Map<String, dynamic>;
   }
 

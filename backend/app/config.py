@@ -47,7 +47,7 @@ def _default_database_url() -> str:
 
 class Settings(BaseSettings):
     app_name: str = "Relationship OS API"
-    app_version: str = "0.8.1"
+    app_version: str = "0.8.2"
     environment: str = Field(default="development")
     api_prefix: str = Field(default="/api")
 
@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     web_search_base_url: str = Field(default="https://api.openai.com/v1")
     web_search_model: str = Field(default="")
     web_search_timeout_seconds: float = Field(default=120.0)
+    world_import_search_provider: str = Field(default="free_web")
 
     jwt_secret: str = Field(default="")
 

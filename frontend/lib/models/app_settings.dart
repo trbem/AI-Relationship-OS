@@ -8,6 +8,7 @@ class AppSettings {
     this.webSearchBaseUrl = 'https://api.openai.com/v1',
     this.webSearchModel = '',
     this.webSearchTimeoutSeconds = 120,
+    this.worldImportSearchProvider = 'free_web',
     this.ollamaEnabled = true,
     this.ollamaBaseUrl = 'http://127.0.0.1:11434',
     this.timeoutSeconds = 120,
@@ -31,6 +32,7 @@ class AppSettings {
   final String webSearchBaseUrl;
   final String webSearchModel;
   final int webSearchTimeoutSeconds;
+  final String worldImportSearchProvider;
   final bool ollamaEnabled;
   final String ollamaBaseUrl;
   final int timeoutSeconds;
@@ -58,6 +60,8 @@ class AppSettings {
       webSearchModel: json['web_search_model']?.toString() ?? '',
       webSearchTimeoutSeconds:
           (json['web_search_timeout_seconds'] as num?)?.toInt() ?? 120,
+      worldImportSearchProvider:
+          json['world_import_search_provider']?.toString() ?? 'free_web',
       ollamaEnabled: json['ollama_enabled'] as bool? ??
           json['llm_fallback_enabled'] as bool? ??
           true,
@@ -93,6 +97,7 @@ class AppSettings {
         'web_search_base_url': webSearchBaseUrl,
         if (webSearchModel.isNotEmpty) 'web_search_model': webSearchModel,
         'web_search_timeout_seconds': webSearchTimeoutSeconds,
+        'world_import_search_provider': worldImportSearchProvider,
         'llm_fallback_enabled': ollamaEnabled,
         'ollama_base_url': ollamaBaseUrl,
         'llm_timeout_seconds': timeoutSeconds,

@@ -1,4 +1,4 @@
-﻿import json
+import json
 import threading
 from datetime import datetime
 
@@ -21,6 +21,7 @@ from app.models import (
     WorldSimulationRound,
     WorldSource,
 )
+from app.services.free_web_search_service import FreeWebWorldSearchService
 from app.services.world_ai_service import WorldAIService
 from app.services.openai_web_search_service import (
     WORLD_IMPORT_ERROR_MESSAGES,
@@ -104,6 +105,7 @@ class CatalogImportRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=255)
     limit: int = Field(default=50, ge=1, le=50)
+    provider: str = Field(default="free_web", pattern="^(free_web|openai_web_search)$")
 
 
 class ConfirmImportRequest(BaseModel):
@@ -591,6 +593,7 @@ def search_world_import(
         result_json=json.dumps(
             {
                 "query": request.query,
+                "provider": request.provider,
                 "candidates": [],
                 "relationships": [],
                 "errors": [],
@@ -653,7 +656,7 @@ def _run_world_import_task(task_id: str) -> None:
         task.stage = "searching"
         task.progress = 0.15
         db.commit()
-        result = OpenAIWebSearchService().search_world(task.query, task.requested_limit)
+        result = _search_world_with_provider(task)
         task.result_json = json.dumps(result, ensure_ascii=False)
         if result.get("status_hint") == "needs_disambiguation":
             task.status = "needs_disambiguation"
@@ -693,6 +696,18 @@ def _fail_task(task: WorldImportTask, error: dict) -> None:
     task.stage = error.get("stage") or task.stage
     task.progress = 1.0
     task.error = json.dumps(error, ensure_ascii=False)
+
+
+def _search_world_with_provider(task: WorldImportTask) -> dict:
+    result = _json(task.result_json, {})
+    provider = result.get("provider") or "free_web"
+    if provider == "openai_web_search":
+        data = OpenAIWebSearchService().search_world(task.query, task.requested_limit)
+    else:
+        data = FreeWebWorldSearchService().search_world(task.query, task.requested_limit)
+        provider = "free_web"
+    data["provider"] = provider
+    return data
 
 
 def _error_detail(

@@ -1,11 +1,17 @@
 # AI Relationship OS —— Flutter 客户端
 
+## v0.8.2 UI 重点
+
+- “联网搜索导入”默认使用免费网页搜索，不需要额外 Key。
+- OpenAI 原生 Web Search 保留为可选高级 provider；只有选中时才显示 API Key / Base URL / Model。
+- 人物世界导入向导默认传 `provider=free_web`，并提示会使用当前 AI 模型提取搜索结果。
+
 ## v0.8.0 UI 重点
 
 - 设置页新增独立 OpenAI Web Search 配置与连接测试。
 - 人物世界页面新增 AI 联网导入向导：输入作品/世界描述、选择 1–50 人目标、查看后台进度、处理同名作品、预览来源并确认导入。
 - 搜索失败会显示结构化中文原因；用户可显式选择 AI 知识生成未验证候选或补足到 50 人。
-当前版本：**v0.8.1**
+当前版本：**v0.8.2**
 
 ## 项目概述
 
@@ -63,7 +69,7 @@ flutter test
 前端由仓库根目录的构建脚本统一打包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.1
+powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.2
 ```
 
 构建产物包含 Flutter 编译的 `relationship_os.exe` 及所需 DLL。

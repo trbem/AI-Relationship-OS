@@ -9,6 +9,7 @@ void main() {
       'web_search_base_url': 'https://api.openai.com/v1',
       'web_search_model': 'gpt-4.1-mini',
       'web_search_timeout_seconds': 45,
+      'world_import_search_provider': 'openai_web_search',
     });
 
     expect(settings.hasStoredApiKey, isTrue);
@@ -16,17 +17,20 @@ void main() {
     expect(settings.webSearchBaseUrl, 'https://api.openai.com/v1');
     expect(settings.webSearchModel, 'gpt-4.1-mini');
     expect(settings.webSearchTimeoutSeconds, 45);
+    expect(settings.worldImportSearchProvider, 'openai_web_search');
 
     final json = const AppSettings(
       webSearchApiKey: 'search-key',
       webSearchBaseUrl: 'https://example.test/v1',
       webSearchModel: 'search-model',
       webSearchTimeoutSeconds: 30,
+      worldImportSearchProvider: 'free_web',
     ).toJson();
 
     expect(json['web_search_api_key'], 'search-key');
     expect(json['web_search_base_url'], 'https://example.test/v1');
     expect(json['web_search_model'], 'search-model');
     expect(json['web_search_timeout_seconds'], 30);
+    expect(json['world_import_search_provider'], 'free_web');
   });
 }
