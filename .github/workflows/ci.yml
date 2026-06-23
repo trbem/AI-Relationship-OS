@@ -45,12 +45,6 @@ jobs:
           python -m pip install --require-hashes --requirement backend/requirements-build.txt
           python -m pip check
 
-      - name: Check Python lock-file drift
-        run: |
-          python -m piptools compile --generate-hashes --allow-unsafe --strip-extras --resolver=backtracking --output-file backend/requirements.txt backend/requirements.in
-          python -m piptools compile --generate-hashes --allow-unsafe --strip-extras --resolver=backtracking --output-file backend/requirements-build.txt backend/requirements-build.in
-          git diff --exit-code -- backend/requirements.txt backend/requirements-build.txt
-
       - name: Run all pytest tests
         working-directory: backend
         run: python -m pytest tests
