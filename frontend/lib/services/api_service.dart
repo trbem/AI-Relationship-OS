@@ -609,6 +609,17 @@ class ApiService {
     ) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> resolveWorldImport({
+    required String taskId,
+    required String selectedOptionId,
+  }) async {
+    return await _jsonRequest(
+      'POST',
+      '/api/world-imports/${Uri.encodeComponent(taskId)}/resolve',
+      body: {'selected_option_id': selectedOptionId},
+    ) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> generateWorldImportFallback({
     required String taskId,
     String mode = 'generate_missing',

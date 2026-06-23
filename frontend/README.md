@@ -1,5 +1,11 @@
 # AI Relationship OS —— Flutter 客户端
 
+## v0.8.3 UI 重点
+
+- 人物世界联网导入新增作品版本消歧弹窗。
+- `needs_disambiguation` 状态不会再显示为 “No verified characters found”。
+- 用户选择版本后会调用 `/api/world-imports/{task_id}/resolve` 并继续轮询导入任务。
+
 ## v0.8.2 UI 重点
 
 - “联网搜索导入”默认使用免费网页搜索，不需要额外 Key。
@@ -11,7 +17,7 @@
 - 设置页新增独立 OpenAI Web Search 配置与连接测试。
 - 人物世界页面新增 AI 联网导入向导：输入作品/世界描述、选择 1–50 人目标、查看后台进度、处理同名作品、预览来源并确认导入。
 - 搜索失败会显示结构化中文原因；用户可显式选择 AI 知识生成未验证候选或补足到 50 人。
-当前版本：**v0.8.2**
+当前版本：**v0.8.3**
 
 ## 项目概述
 
@@ -69,7 +75,7 @@ flutter test
 前端由仓库根目录的构建脚本统一打包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.2
+powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.3
 ```
 
 构建产物包含 Flutter 编译的 `relationship_os.exe` 及所需 DLL。

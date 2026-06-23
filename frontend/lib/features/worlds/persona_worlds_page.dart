@@ -568,7 +568,9 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
         provider: request.provider,
       );
       task = await _pollWorldImportTask(task);
+      task = await _resolveWorldImportDisambiguation(task);
       if (!mounted) return;
+      if (task.isEmpty) return;
 
       var result = task['result'] as Map<String, dynamic>? ?? {};
       var candidates = (result['candidates'] as List<dynamic>? ?? [])
@@ -578,7 +580,10 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       var errors = (result['errors'] as List<dynamic>? ?? [])
           .map((item) => item.toString())
           .toList();
-      if (candidates.isEmpty) {
+      final taskStatus = task['status']?.toString() ?? '';
+      final canGenerateFallback =
+          {'failed', 'preview', 'partial'}.contains(taskStatus);
+      if (candidates.isEmpty && canGenerateFallback) {
         final useFallback = await _confirmGeneratedFallback(task);
         if (useFallback == true) {
           task = await widget.apiService.generateWorldImportFallback(
@@ -770,6 +775,114 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       );
     }
     return current;
+  }
+
+  Future<Map<String, dynamic>> _resolveWorldImportDisambiguation(
+    Map<String, dynamic> task,
+  ) async {
+    var current = task;
+    while (mounted && current['status']?.toString() == 'needs_disambiguation') {
+      final result = current['result'] as Map<String, dynamic>? ?? {};
+      final options = (result['disambiguation_options'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final selectedOptionId = await _chooseWorldImportDisambiguation(
+        current,
+        options,
+      );
+      if (!mounted) return {};
+      if (selectedOptionId == null || selectedOptionId.isEmpty) {
+        return {};
+      }
+      current = await widget.apiService.resolveWorldImport(
+        taskId: current['id'].toString(),
+        selectedOptionId: selectedOptionId,
+      );
+      current = await _pollWorldImportTask(current);
+    }
+    return current;
+  }
+
+  Future<String?> _chooseWorldImportDisambiguation(
+    Map<String, dynamic> task,
+    List<Map<String, dynamic>> options,
+  ) {
+    var selectedId =
+        options.isNotEmpty ? options.first['id']?.toString() : null;
+    return showDialog<String?>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Choose work version'),
+          content: SizedBox(
+            width: 680,
+            height: 460,
+            child: options.isEmpty
+                ? const Text(
+                    'The search result is ambiguous, but no work options were returned.',
+                  )
+                : RadioGroup<String>(
+                    groupValue: selectedId,
+                    onChanged: (value) =>
+                        setDialogState(() => selectedId = value),
+                    child: ListView(
+                      children: [
+                        Text(
+                          '"${task['query'] ?? ''}" may refer to multiple versions. Choose one to continue. Cancel keeps the task and will not generate unverified candidates.',
+                        ),
+                        const SizedBox(height: 12),
+                        for (final option in options)
+                          RadioListTile<String>(
+                            value: option['id']?.toString() ?? '',
+                            title: Text(
+                              option['title']?.toString() ?? 'Untitled work',
+                            ),
+                            subtitle: _disambiguationSubtitle(option),
+                            secondary: const Icon(Icons.manage_search),
+                          ),
+                      ],
+                    ),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel, keep task'),
+            ),
+            FilledButton(
+              onPressed: selectedId == null || selectedId!.isEmpty
+                  ? null
+                  : () => Navigator.pop(context, selectedId),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _disambiguationSubtitle(Map<String, dynamic> option) {
+    final parts = [
+      if ((option['author']?.toString() ?? '').isNotEmpty)
+        'Author/version: ${option['author']}',
+      if ((option['medium']?.toString() ?? '').isNotEmpty)
+        'Medium: ${option['medium']}',
+      if ((option['reason']?.toString() ?? '').isNotEmpty)
+        'Reason: ${option['reason']}',
+    ];
+    final sources = (option['sources'] as List<dynamic>? ?? [])
+        .cast<Map<String, dynamic>>()
+        .map((source) => source['url']?.toString() ?? '')
+        .where((url) => url.isNotEmpty)
+        .take(3)
+        .toList();
+    return Text(
+      [
+        ...parts,
+        if (sources.isNotEmpty) 'Sources: ${sources.join('\n')}',
+      ].join('\n'),
+      maxLines: 8,
+      overflow: TextOverflow.ellipsis,
+    );
   }
 
   Future<bool?> _confirmGeneratedFallback(Map<String, dynamic> task) {
