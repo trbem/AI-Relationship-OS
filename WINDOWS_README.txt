@@ -1,10 +1,10 @@
 AI Relationship OS —— Windows 使用说明
 ========================================
 
-当前版本：v0.8.0
+当前版本：v0.8.1
 
 一、安装与启动
-1. 推荐运行 RelationshipOS-Setup-0.8.0.exe 完成安装。
+1. 推荐运行 RelationshipOS-Setup-0.8.1.exe 完成安装。
 2. 也可以解压 ZIP，但必须保留 relationship_os.exe、data、backend 和 DLL 的相对位置。
 3. 启动 AI Relationship OS。客户端会自动启动本机后端，并等待健康检查通过。
 4. 关闭客户端后，由客户端启动的后端进程会一并退出。
@@ -42,9 +42,9 @@ AI Relationship OS —— Windows 使用说明
 1. 安装锁定的构建依赖：backend\.venv\Scripts\python.exe -m pip install --require-hashes -r backend\requirements-build.txt
 2. 安装 Inno Setup 6。
 3. 在仓库根目录运行：
-   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.0
+   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.1
 4. 若只生成 ZIP：
-   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.0 -SkipInstaller
+   powershell -ExecutionPolicy Bypass -File scripts\Release-Windows.ps1 -Version 0.8.1 -SkipInstaller
 5. 发布目录会同时生成 ZIP、安装程序和 SHA256 校验文件。
 
 发布脚本直接调用 Flutter SDK 的 dart.exe 与 flutter_tools.snapshot，

@@ -148,12 +148,18 @@ class _SettingsPageState extends State<SettingsPage> {
           _error = 'Web Search timeout must be between 10 and 600 seconds.');
       return;
     }
+    final submittedWebSearchKey = _webSearchApiKeyController.text.trim();
+    final webSearchConfigured =
+        _hasStoredWebSearchApiKey || submittedWebSearchKey.isNotEmpty;
+    if (webSearchConfigured && _webSearchModelController.text.trim().isEmpty) {
+      setState(() => _error = 'Web Search Model cannot be empty.');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      final submittedWebSearchKey = _webSearchApiKeyController.text.trim();
       final saved = await widget.apiService.updateSettings(
         _settingsFromFields(
           timeout: timeout,
@@ -241,6 +247,10 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     if (_webSearchBaseUrlController.text.trim().isEmpty) {
       setState(() => _error = 'Web Search Base URL cannot be empty.');
+      return;
+    }
+    if (_webSearchModelController.text.trim().isEmpty) {
+      setState(() => _error = 'Web Search Model cannot be empty.');
       return;
     }
     if (!_hasStoredWebSearchApiKey &&
@@ -596,7 +606,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   controller: _webSearchModelController,
                   decoration: const InputDecoration(
                     labelText: 'Web Search Model',
-                    hintText: 'Leave blank to use backend default',
+                    hintText:
+                        'Required, e.g. a Responses model with web search support',
                     border: OutlineInputBorder(),
                   ),
                 ),

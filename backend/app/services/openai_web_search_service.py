@@ -5,6 +5,7 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -13,7 +14,7 @@ from app.config import get_settings
 
 WORLD_IMPORT_ERROR_MESSAGES = {
     "WEB_SEARCH_NOT_CONFIGURED": "尚未配置 OpenAI Web Search API Key 或模型。",
-    "WEB_SEARCH_UNSUPPORTED": "当前提供商不支持原生联网搜索，请配置 OpenAI Web Search。",
+    "WEB_SEARCH_UNSUPPORTED": "当前端点不支持 OpenAI Responses Web Search；请检查 Base URL 是否为 https://api.openai.com/v1。",
     "AUTHENTICATION_FAILED": "OpenAI Web Search 鉴权失败，请检查 API Key。",
     "RATE_LIMITED": "OpenAI Web Search 触发限流，请稍后重试。",
     "NETWORK_UNAVAILABLE": "网络不可用，无法连接 OpenAI Web Search。",
@@ -195,10 +196,12 @@ class OpenAIWebSearchService:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        normalized_base_url = _normalize_responses_base_url(base_url)
+        endpoint = f"{normalized_base_url.rstrip('/')}/responses"
         try:
             with httpx.Client(timeout=timeout_seconds) as client:
                 response = client.post(
-                    f"{base_url.rstrip('/')}/responses",
+                    endpoint,
                     headers=headers,
                     json=payload,
                 )
@@ -217,6 +220,8 @@ class OpenAIWebSearchService:
                 code, retryable = "AUTHENTICATION_FAILED", False
             elif status == 429:
                 code, retryable = "RATE_LIMITED", True
+            elif status == 404:
+                code, retryable = "WEB_SEARCH_UNSUPPORTED", False
             elif status in {400, 404, 422} and "web_search" in detail.lower():
                 code, retryable = "WEB_SEARCH_UNSUPPORTED", False
             else:
@@ -225,14 +230,14 @@ class OpenAIWebSearchService:
                 code,
                 stage=stage,
                 retryable=retryable,
-                technical_summary=f"HTTP {status}: {detail}",
+                technical_summary=_http_status_summary(endpoint, status, detail),
             ) from exc
         except httpx.HTTPError as exc:
             raise WorldImportError(
                 "NETWORK_UNAVAILABLE",
                 stage=stage,
                 retryable=True,
-                technical_summary=exc.__class__.__name__,
+                technical_summary=f"POST {endpoint} failed: {exc.__class__.__name__}",
             ) from exc
         try:
             data = response.json()
@@ -251,6 +256,42 @@ class OpenAIWebSearchService:
                 technical_summary="top-level response is not an object",
             )
         return data
+
+
+def _normalize_responses_base_url(base_url: str) -> str:
+    """Return the base URL that should be joined with /responses.
+
+    Users often paste either the OpenAI origin or the full Responses endpoint.
+    The service stores a base URL, not a complete endpoint, so normalize those
+    common shapes while leaving third-party compatible provider paths intact.
+    """
+
+    value = base_url.strip().rstrip("/")
+    parsed = urlsplit(value)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/responses"):
+        path = path[: -len("/responses")]
+    elif path == "/responses":
+        path = ""
+    if parsed.netloc.lower() == "api.openai.com" and path in {"", "/"}:
+        path = "/v1"
+    normalized = urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            path or "",
+            "",
+            "",
+        )
+    ).rstrip("/")
+    return normalized
+
+
+def _http_status_summary(endpoint: str, status: int, detail: str) -> str:
+    summary = f"POST {endpoint} returned HTTP {status}"
+    if detail:
+        summary = f"{summary}: {detail}"
+    return summary
 
 
 def _search_prompt(query: str, limit: int) -> str:
