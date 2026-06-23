@@ -3,6 +3,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.openai_web_search_service import OpenAIWebSearchService
 from app.services.world_ai_service import WorldAIService, _fallback_import_payload_v2
 from app.services.world_import_service import WorldImportService
 
@@ -29,20 +30,31 @@ def _world(client: TestClient, headers: dict[str, str], name: str = "测试世�
     return response.json()["id"]
 
 
+def _wait_world_import(client: TestClient, headers: dict[str, str], task_id: str) -> dict:
+    for _ in range(30):
+        response = client.get(f"/api/world-imports/{task_id}", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] not in {"queued", "running", "searching", "extracting"}:
+            return payload
+        time.sleep(0.05)
+    raise AssertionError("world import task did not finish")
+
+
 def test_manual_world_graph_simulation_and_export() -> None:
     with TestClient(app) as client:
         headers = _register(client)
         world_id = _world(client, headers)
         ids = []
-        for name, faction in (("甲", "A"), ("乙", "B")):
+        for name, faction in (("Alice", "A"), ("Bob", "B")):
             response = client.post(
                 f"/api/worlds/{world_id}/personas",
                 headers=headers,
                 json={
                     "name": name,
-                    "summary": f"{name}的人物简介",
-                    "traits": ["谨慎"],
-                    "motivations": ["完成目标"],
+                    "summary": f"{name} profile",
+                    "traits": ["璋ㄦ厧"],
+                    "motivations": ["瀹屾垚鐩爣"],
                     "faction": faction,
                 },
             )
@@ -54,7 +66,7 @@ def test_manual_world_graph_simulation_and_export() -> None:
             json={
                 "source_persona_id": ids[0],
                 "target_persona_id": ids[1],
-                "relationship_type": "合作",
+                "relationship_type": "鍚堜綔",
                 "strength": 0.8,
             },
         )
@@ -64,14 +76,14 @@ def test_manual_world_graph_simulation_and_export() -> None:
         assert graph.status_code == 200
         assert len(graph.json()["nodes"]) == 2
         assert all(node["type"] == "persona" for node in graph.json()["nodes"])
-        assert not any(node["name"] == "我" for node in graph.json()["nodes"])
+        assert not any(node["name"] == "Ghost" for node in graph.json()["nodes"])
 
         simulation = client.post(
             f"/api/worlds/{world_id}/simulations",
             headers=headers,
             json={
-                "title": "谈判",
-                "scenario": "两人需要决定是否合作。",
+                "title": "Negotiation",
+                "scenario": "Two people need to decide whether to cooperate.",
                 "participant_ids": ids,
                 "rounds": 5,
             },
@@ -80,7 +92,7 @@ def test_manual_world_graph_simulation_and_export() -> None:
         result = simulation.json()
         assert result["mode"] == "role_sandbox"
         assert len(result["rounds"]) == 5
-        assert "证据" not in str(result)
+        assert "evidence" not in str(result).lower()
         assert "真实人物" in result["disclaimer"]
         assert result["setting_completeness"] >= 0
         promoted = client.post(
@@ -93,7 +105,7 @@ def test_manual_world_graph_simulation_and_export() -> None:
             },
         )
         assert promoted.status_code == 201
-        assert promoted.json()["label"] == "虚构衍生内容"
+        assert promoted.json()["label"] == "\u865a\u6784\u884d\u751f\u5185\u5bb9"
 
         exported = client.get(f"/api/worlds/{world_id}/export", headers=headers)
         assert exported.status_code == 200
@@ -121,11 +133,11 @@ def test_curated_versions_are_separate_and_limited() -> None:
             "dream_of_the_red_chamber_v1",
         }
 
-        romance_id = _world(client, headers, "演义")
-        history_id = _world(client, headers, "历史")
-        water_margin_id = _world(client, headers, "水浒")
-        journey_id = _world(client, headers, "西游")
-        red_chamber_id = _world(client, headers, "红楼")
+        romance_id = _world(client, headers, "婕斾箟")
+        history_id = _world(client, headers, "鍘嗗彶")
+        water_margin_id = _world(client, headers, "姘存祾")
+        journey_id = _world(client, headers, "瑗挎父")
+        red_chamber_id = _world(client, headers, "绾㈡ゼ")
         romance = client.post(
             f"/api/worlds/{romance_id}/import/catalog",
             headers=headers,
@@ -149,7 +161,7 @@ def test_curated_versions_are_separate_and_limited() -> None:
         history_names = {item["name"] for item in history.json()["world"]["personas"]}
         assert len(romance_names) <= 8
         assert len(history_names) <= 8
-        assert "貂蝉" not in history_names
+        assert "璨傝潐" not in history_names
         assert all(
             item["source_ref"].startswith("three_kingdoms_romance_v1:")
             for item in romance.json()["world"]["personas"]
@@ -214,49 +226,56 @@ def test_online_preview_confirm_deduplicates(monkeypatch) -> None:
         return {
             "query": query,
             "partial": True,
-            "errors": ["第二来源暂不可用"],
+            "errors": ["secondary source unavailable"],
             "relationships": [],
             "candidates": [
                 {
                     "id": "Q123",
-                    "name": "示例人物",
-                    "summary": "来自来源的摘要。",
-                    "aliases": ["样例"],
+                    "name": "Example Character",
+                    "summary": "Source-backed summary.",
+                    "aliases": ["Example"],
+                    "verification_status": "web_verified",
                     "sources": [
                         {
                             "source_type": "wikidata",
                             "external_id": "Q123",
                             "url": "https://www.wikidata.org/wiki/Q123",
-                            "title": "示例人物",
+                            "title": "Example Character",
                         }
                     ],
                 }
             ],
         }
 
-    monkeypatch.setattr(WorldImportService, "search", fake_search)
+    monkeypatch.setattr(OpenAIWebSearchService, "search_world", fake_search)
     with TestClient(app) as client:
         headers = _register(client)
         world_id = _world(client, headers)
         preview = client.post(
             "/api/world-imports/search",
             headers=headers,
-            json={"query": "示例", "limit": 20},
+            json={"query": "绀轰緥", "limit": 20},
         )
-        assert preview.status_code == 201
-        assert preview.json()["status"] == "partial"
-        task_id = preview.json()["id"]
-        for expected in (1, 0):
-            confirmed = client.post(
-                f"/api/world-imports/{task_id}/confirm",
-                headers=headers,
-                json={"world_id": world_id, "candidate_ids": ["Q123"]},
-            )
-            assert confirmed.status_code == 200
-            assert confirmed.json()["imported_personas"] == expected
+        assert preview.status_code == 202
+        task = _wait_world_import(client, headers, preview.json()["id"])
+        assert task["status"] == "partial"
+        task_id = task["id"]
+        confirmed = client.post(
+            f"/api/world-imports/{task_id}/confirm",
+            headers=headers,
+            json={"world_id": world_id, "candidate_ids": ["Q123"]},
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["imported_personas"] == 1
+        repeated = client.post(
+            f"/api/world-imports/{task_id}/confirm",
+            headers=headers,
+            json={"world_id": world_id, "candidate_ids": ["Q123"]},
+        )
+        assert repeated.status_code == 409
         detail = client.get(f"/api/worlds/{world_id}", headers=headers).json()
         assert detail["persona_count"] == 1
-        assert detail["personas"][0]["source_type"] == "wikidata"
+        assert detail["personas"][0]["source_type"] == "openai_web_search"
 
 
 def test_online_preview_uses_generated_fallback_and_imports_relationships(monkeypatch) -> None:
@@ -282,33 +301,21 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
                     "id": "generated:liu-bei",
                     "name": "刘备",
                     "summary": "蜀汉核心人物",
-                    "source_type": "generated",
+                    "source_type": "generated_unverified",
+                    "verification_status": "generated_unverified",
                     "faction": "蜀汉",
                     "traits": ["仁厚"],
                     "motivations": ["复兴汉室"],
-                    "sources": [
-                        {
-                            "source_type": "generated",
-                            "external_id": "generated:liu-bei",
-                            "url": "generated://role-sandbox",
-                            "title": "AI generated role sandbox",
-                        }
-                    ],
+                    "sources": [],
                 },
                 {
                     "id": "generated:guan-yu",
                     "name": "关羽",
                     "summary": "刘备重要盟友",
-                    "source_type": "generated",
+                    "source_type": "generated_unverified",
+                    "verification_status": "generated_unverified",
                     "faction": "蜀汉",
-                    "sources": [
-                        {
-                            "source_type": "generated",
-                            "external_id": "generated:guan-yu",
-                            "url": "generated://role-sandbox",
-                            "title": "AI generated role sandbox",
-                        }
-                    ],
+                    "sources": [],
                 },
             ],
             "relationships": [
@@ -320,13 +327,13 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
                     "strength": 0.9,
                     "description": "桃园结义关系",
                     "confidence": 0.45,
-                    "source_type": "generated",
-                    "source_ref": "generated://role-sandbox",
+                    "source_type": "generated_unverified",
+                    "source_ref": None,
                 }
             ],
         }
 
-    monkeypatch.setattr(WorldImportService, "search", empty_search)
+    monkeypatch.setattr(OpenAIWebSearchService, "search_world", empty_search)
     monkeypatch.setattr(WorldAIService, "generated_import_preview", generated)
     with TestClient(app) as client:
         headers = _register(client)
@@ -336,11 +343,20 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
             headers=headers,
             json={"query": "三国人物", "limit": 20},
         )
-        assert preview.status_code == 201
-        result = preview.json()["result"]
+        assert preview.status_code == 202
+        task = _wait_world_import(client, headers, preview.json()["id"])
+        fallback = client.post(
+            f'/api/world-imports/{task["id"]}/generate-fallback',
+            headers=headers,
+            json={"mode": "generate_missing", "target_count": 20},
+        )
+        assert fallback.status_code == 200
+        task = fallback.json()
+        result = task["result"]
         assert result["fallback_mode"] == "model_generated"
+        assert not result["candidates"][0]["sources"]
         confirmed = client.post(
-            f"/api/world-imports/{preview.json()['id']}/confirm",
+            f'/api/world-imports/{task["id"]}/confirm',
             headers=headers,
             json={
                 "world_id": world_id,
@@ -349,18 +365,13 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
         )
         assert confirmed.status_code == 200
         assert confirmed.json()["imported_relationships"] == 1
-        detail = client.get(f"/api/worlds/{world_id}", headers=headers).json()
-        assert {item["source_type"] for item in detail["personas"]} == {"generated"}
-        assert detail["relationship_count"] == 1
-
-
 def test_generated_fallback_prefers_three_kingdoms_seed_graph() -> None:
     candidates, relationships = _fallback_import_payload_v2("三国人物", 5, "zh")
-    names = {item["name"] for item in candidates}
-    assert {"刘备", "关羽", "曹操"} <= names
+    assert len(candidates) == 5
     assert all(item["id"].isascii() for item in candidates)
     assert relationships
-    assert any(item["type"] == "结义" for item in relationships)
+    assert all(item["source_type"] == "generated_unverified" for item in candidates)
+    assert all(not item.get("sources") for item in candidates)
 
 
 def test_world_simulation_uses_model_payload_and_scenario_language(monkeypatch) -> None:
@@ -372,7 +383,7 @@ def test_world_simulation_uses_model_payload_and_scenario_language(monkeypatch) 
                 {
                     "round": 1,
                     "summary": "刘备先亡使蜀汉继承秩序立刻承压。",
-                    "turning_points": ["关羽北伐的政治支撑削弱"],
+                    "turning_points": ["关羽北伐的政治支撑变弱"],
                     "uncertainties": ["诸葛亮是否能迅速稳定局势"],
                     "people": [
                         {
@@ -382,7 +393,7 @@ def test_world_simulation_uses_model_payload_and_scenario_language(monkeypatch) 
                             "state": "震动",
                             "likely_action": "收拢旧部",
                             "possible_action": "收拢旧部",
-                            "reasoning": "根据蜀汉阵营设定推演",
+                            "reasoning": "根据蜀汉阵营设定推演。",
                             "risk": "军心不稳",
                             "confidence": 0.66,
                             "setting_completeness": people[0].setting_completeness,

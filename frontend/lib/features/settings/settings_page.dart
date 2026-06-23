@@ -25,6 +25,10 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _apiKeyController = TextEditingController();
   final _baseUrlController = TextEditingController();
+  final _webSearchApiKeyController = TextEditingController();
+  final _webSearchBaseUrlController = TextEditingController();
+  final _webSearchModelController = TextEditingController();
+  final _webSearchTimeoutController = TextEditingController();
   String _provider = 'openai_compatible';
   final _modelController = TextEditingController();
   final _ollamaUrlController = TextEditingController();
@@ -33,6 +37,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _dataDirectoryController = TextEditingController();
   bool _ollamaEnabled = true;
   bool _hasStoredApiKey = false;
+  bool _hasStoredWebSearchApiKey = false;
   String _activeModelProvider = 'openai_compatible';
   String _activeModelLabel = '';
   String _fallbackModelLabel = '';
@@ -40,6 +45,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _loading = false;
   bool _saving = false;
   bool _testing = false;
+  bool _testingWebSearch = false;
   String? _error;
 
   @override
@@ -60,12 +66,17 @@ class _SettingsPageState extends State<SettingsPage> {
         _provider = settings.provider;
         _baseUrlController.text = settings.baseUrl;
         _modelController.text = settings.model;
+        _webSearchBaseUrlController.text = settings.webSearchBaseUrl;
+        _webSearchModelController.text = settings.webSearchModel;
+        _webSearchTimeoutController.text =
+            settings.webSearchTimeoutSeconds.toString();
         _ollamaEnabled = settings.ollamaEnabled;
         _ollamaUrlController.text = settings.ollamaBaseUrl;
         _timeoutController.text = settings.timeoutSeconds.toString();
         _temperatureController.text = settings.temperature.toString();
         _dataDirectoryController.text = settings.dataDirectory;
         _hasStoredApiKey = settings.hasStoredApiKey;
+        _hasStoredWebSearchApiKey = settings.hasStoredWebSearchApiKey;
         _activeModelProvider = settings.activeModelProvider;
         _activeModelLabel = settings.activeModelLabel;
         _fallbackModelLabel = settings.fallbackModelLabel;
@@ -77,6 +88,32 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) setState(() => _loading = false);
     }
   }
+
+  int? _webSearchTimeout() =>
+      int.tryParse(_webSearchTimeoutController.text.trim());
+
+  AppSettings _settingsFromFields({
+    required int timeout,
+    required double temperature,
+    int? webSearchTimeout,
+  }) =>
+      AppSettings(
+        mimoApiKey: _apiKeyController.text.trim(),
+        provider: _provider,
+        baseUrl: _baseUrlController.text.trim(),
+        model: _modelController.text.trim(),
+        webSearchApiKey: _webSearchApiKeyController.text.trim(),
+        webSearchBaseUrl: _webSearchBaseUrlController.text.trim(),
+        webSearchModel: _webSearchModelController.text.trim(),
+        webSearchTimeoutSeconds: webSearchTimeout ?? _webSearchTimeout() ?? 120,
+        ollamaEnabled: _ollamaEnabled,
+        ollamaBaseUrl: _ollamaUrlController.text.trim(),
+        timeoutSeconds: timeout,
+        temperature: temperature,
+        dataDirectory: _dataDirectoryController.text.trim(),
+        hasStoredApiKey: _hasStoredApiKey,
+        hasStoredWebSearchApiKey: _hasStoredWebSearchApiKey,
+      );
 
   Future<void> _save() async {
     final timeout = int.tryParse(_timeoutController.text.trim());
@@ -103,29 +140,34 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() => _error = 'Temperature 必须在 0 到 2 之间。');
       return;
     }
+    final webSearchTimeout = _webSearchTimeout();
+    if (webSearchTimeout == null ||
+        webSearchTimeout < 10 ||
+        webSearchTimeout > 600) {
+      setState(() =>
+          _error = 'Web Search timeout must be between 10 and 600 seconds.');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
+      final submittedWebSearchKey = _webSearchApiKeyController.text.trim();
       final saved = await widget.apiService.updateSettings(
-        AppSettings(
-          mimoApiKey: _apiKeyController.text.trim(),
-          provider: _provider,
-          baseUrl: _baseUrlController.text.trim(),
-          model: _modelController.text.trim(),
-          ollamaEnabled: _ollamaEnabled,
-          ollamaBaseUrl: _ollamaUrlController.text.trim(),
-          timeoutSeconds: timeout,
+        _settingsFromFields(
+          timeout: timeout,
           temperature: temperature,
-          dataDirectory: _dataDirectoryController.text.trim(),
-          hasStoredApiKey: _hasStoredApiKey,
+          webSearchTimeout: webSearchTimeout,
         ),
       );
       if (!mounted) return;
       setState(() {
         _apiKeyController.clear();
+        _webSearchApiKeyController.clear();
         _hasStoredApiKey = saved.hasStoredApiKey;
+        _hasStoredWebSearchApiKey =
+            saved.hasStoredWebSearchApiKey || submittedWebSearchKey.isNotEmpty;
         _activeModelProvider = saved.activeModelProvider;
         _activeModelLabel = saved.activeModelLabel;
         _fallbackModelLabel = saved.fallbackModelLabel;
@@ -171,18 +213,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
     try {
       final result = await widget.apiService.testAiConnection(
-        AppSettings(
-          mimoApiKey: _apiKeyController.text.trim(),
-          provider: _provider,
-          baseUrl: _baseUrlController.text.trim(),
-          model: _modelController.text.trim(),
-          ollamaEnabled: _ollamaEnabled,
-          ollamaBaseUrl: _ollamaUrlController.text.trim(),
-          timeoutSeconds: timeout,
-          temperature: temperature,
-          dataDirectory: _dataDirectoryController.text.trim(),
-          hasStoredApiKey: _hasStoredApiKey,
-        ),
+        _settingsFromFields(timeout: timeout, temperature: temperature),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -196,6 +227,53 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _testing = false);
+    }
+  }
+
+  Future<void> _testWebSearchConnection() async {
+    final webSearchTimeout = _webSearchTimeout();
+    if (webSearchTimeout == null ||
+        webSearchTimeout < 10 ||
+        webSearchTimeout > 600) {
+      setState(() =>
+          _error = 'Web Search timeout must be between 10 and 600 seconds.');
+      return;
+    }
+    if (_webSearchBaseUrlController.text.trim().isEmpty) {
+      setState(() => _error = 'Web Search Base URL cannot be empty.');
+      return;
+    }
+    if (!_hasStoredWebSearchApiKey &&
+        _webSearchApiKeyController.text.trim().isEmpty) {
+      setState(() => _error = 'Web Search API Key cannot be empty.');
+      return;
+    }
+    setState(() {
+      _testingWebSearch = true;
+      _error = null;
+    });
+    try {
+      final result = await widget.apiService.testWebSearchConnection(
+        _settingsFromFields(
+          timeout: int.tryParse(_timeoutController.text.trim()) ?? 120,
+          temperature:
+              double.tryParse(_temperatureController.text.trim()) ?? 0.2,
+          webSearchTimeout: webSearchTimeout,
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Web Search connected: ${result['provider'] ?? 'openai'} · '
+            '${result['model'] ?? _webSearchModelController.text.trim()}',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _testingWebSearch = false);
     }
   }
 
@@ -389,6 +467,10 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _apiKeyController.dispose();
     _baseUrlController.dispose();
+    _webSearchApiKeyController.dispose();
+    _webSearchBaseUrlController.dispose();
+    _webSearchModelController.dispose();
+    _webSearchTimeoutController.dispose();
     _modelController.dispose();
     _ollamaUrlController.dispose();
     _timeoutController.dispose();
@@ -484,6 +566,58 @@ class _SettingsPageState extends State<SettingsPage> {
                     labelText: 'Model',
                     border: OutlineInputBorder(),
                   ),
+                ),
+                const SizedBox(height: 12),
+                Text('OpenAI Web Search',
+                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _webSearchApiKeyController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: 'Web Search API Key',
+                    hintText: _hasStoredWebSearchApiKey
+                        ? 'Stored securely; leave blank to keep unchanged'
+                        : 'Enter API Key',
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _webSearchBaseUrlController,
+                  decoration: const InputDecoration(
+                    labelText: 'Web Search Base URL',
+                    hintText: 'https://api.openai.com/v1',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _webSearchModelController,
+                  decoration: const InputDecoration(
+                    labelText: 'Web Search Model',
+                    hintText: 'Leave blank to use backend default',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _webSearchTimeoutController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Web Search Timeout (seconds)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: (_saving || _testingWebSearch)
+                      ? null
+                      : _testWebSearchConnection,
+                  icon: const Icon(Icons.travel_explore),
+                  label: Text(_testingWebSearch
+                      ? 'Testing Web Search...'
+                      : 'Test Web Search'),
                 ),
                 const SizedBox(height: 12),
                 SwitchListTile(

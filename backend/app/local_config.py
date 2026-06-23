@@ -27,6 +27,10 @@ ALLOWED_SETTINGS = {
     "ollama_model",
     "embedding_provider",
     "embedding_model",
+    "web_search_api_key",
+    "web_search_base_url",
+    "web_search_model",
+    "web_search_timeout_seconds",
     "jwt_secret",
 }
 

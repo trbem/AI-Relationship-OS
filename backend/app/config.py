@@ -47,7 +47,7 @@ def _default_database_url() -> str:
 
 class Settings(BaseSettings):
     app_name: str = "Relationship OS API"
-    app_version: str = "0.7.0"
+    app_version: str = "0.8.0"
     environment: str = Field(default="development")
     api_prefix: str = Field(default="/api")
 
@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     embedding_provider: str = Field(default="local")
     embedding_model: str = Field(default="local-hash-v1")
     completion_model: str = Field(default="mimo-v2.5")
+    web_search_api_key: str = Field(default="")
+    web_search_base_url: str = Field(default="https://api.openai.com/v1")
+    web_search_model: str = Field(default="")
+    web_search_timeout_seconds: float = Field(default=120.0)
 
     jwt_secret: str = Field(default="")
 

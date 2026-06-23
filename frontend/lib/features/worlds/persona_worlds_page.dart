@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../models/relationship_graph.dart';
@@ -413,131 +415,232 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
     await _selectWorld(worldId);
   }
 
-  Future<void> _searchOnline() async {
-    final worldId = _world?['id']?.toString();
-    if (worldId == null) return;
+  Future<void> _searchOnlineV08() async {
+    final currentWorldId = _world?['id']?.toString();
     final query = TextEditingController();
-    final value = await showDialog<String>(
+    final newWorldName = TextEditingController(
+      text: _world?['name']?.toString() ?? '',
+    );
+    double limit = 20;
+    var importMode = currentWorldId == null ? 'create' : 'append';
+    final request =
+        await showDialog<({String query, int limit, String mode, String name})>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Wikidata + Wikipedia 搜索'),
-        content: TextField(
-          controller: query,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: '主题，例如：希腊神话、三国人物'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('AI Web Import'),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: query,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Topic',
+                    hintText: 'e.g. Greek mythology, Three Kingdoms',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text('Limit'),
+                    Expanded(
+                      child: Slider(
+                        value: limit,
+                        min: 1,
+                        max: 50,
+                        divisions: 49,
+                        label: limit.round().toString(),
+                        onChanged: (value) =>
+                            setDialogState(() => limit = value),
+                      ),
+                    ),
+                    Text('${limit.round()}'),
+                  ],
+                ),
+                RadioGroup<String>(
+                  groupValue: importMode,
+                  onChanged: (value) =>
+                      setDialogState(() => importMode = value ?? importMode),
+                  child: Column(
+                    children: [
+                      RadioListTile<String>(
+                        value: 'append',
+                        enabled: currentWorldId != null,
+                        title: const Text('Append to current world'),
+                      ),
+                      const RadioListTile<String>(
+                        value: 'create',
+                        title: Text('Create a new world'),
+                      ),
+                    ],
+                  ),
+                ),
+                if (importMode == 'create')
+                  TextField(
+                    controller: newWorldName,
+                    decoration: const InputDecoration(
+                      labelText: 'New world name',
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final trimmedQuery = query.text.trim();
+                final trimmedName = newWorldName.text.trim();
+                if (trimmedQuery.isEmpty) return;
+                if (importMode == 'create' && trimmedName.isEmpty) return;
+                Navigator.pop(
+                  context,
+                  (
+                    query: trimmedQuery,
+                    limit: limit.round().clamp(1, 50).toInt(),
+                    mode: importMode,
+                    name: trimmedName.isEmpty ? trimmedQuery : trimmedName,
+                  ),
+                );
+              },
+              child: const Text('Search'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, query.text.trim()),
-            child: const Text('搜索'),
-          ),
-        ],
       ),
     );
-    if (value == null || value.isEmpty) return;
+    query.dispose();
+    newWorldName.dispose();
+    if (request == null) return;
+
     setState(() => _loading = true);
     try {
-      final task =
-          await widget.apiService.searchWorldImport(query: value, limit: 20);
-      final result = task['result'] as Map<String, dynamic>? ?? {};
-      final candidates = (result['candidates'] as List<dynamic>? ?? [])
+      var task = await widget.apiService.searchWorldImport(
+        query: request.query,
+        limit: request.limit,
+      );
+      task = await _pollWorldImportTask(task);
+      if (!mounted) return;
+
+      var result = task['result'] as Map<String, dynamic>? ?? {};
+      var candidates = (result['candidates'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
-      final sourceFailures = (result['source_failures'] as List<dynamic>? ?? [])
+      var sourceFailures = (result['source_failures'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
-      final errors = (result['errors'] as List<dynamic>? ?? [])
+      var errors = (result['errors'] as List<dynamic>? ?? [])
           .map((item) => item.toString())
           .toList();
+      if (candidates.isEmpty) {
+        final useFallback = await _confirmGeneratedFallback(task);
+        if (useFallback == true) {
+          task = await widget.apiService.generateWorldImportFallback(
+            taskId: task['id'].toString(),
+            mode: 'generate_missing',
+            targetCount: request.limit,
+          );
+          result = task['result'] as Map<String, dynamic>? ?? {};
+          candidates = (result['candidates'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          sourceFailures = (result['source_failures'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          errors = (result['errors'] as List<dynamic>? ?? [])
+              .map((item) => item.toString())
+              .toList();
+        }
+      }
       final fallbackMode = result['fallback_mode']?.toString() ?? 'none';
       final generatedNotice = result['generated_notice']?.toString();
       final relationships = (result['relationships'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
-      if (!mounted) return;
       final selected = candidates.map((item) => item['id'].toString()).toSet();
+      final selectedRelationships =
+          List<int>.generate(relationships.length, (index) => index).toSet();
+
       final accepted = await showDialog<bool>(
         context: context,
         builder: (context) => StatefulBuilder(
           builder: (context, setDialogState) => AlertDialog(
-            title: Text('导入预览 · ${task['status']}'),
+            title: Text('Import preview · ${task['status']}'),
             content: SizedBox(
-              width: 620,
-              height: 430,
+              width: 700,
+              height: 500,
               child: candidates.isEmpty
-                  ? ListView(
-                      children: [
-                        Text(task['error']?.toString() ?? '没有找到可导入人物。'),
-                        if (sourceFailures.isNotEmpty) ...[
-                          const Divider(height: 16),
-                          const Text('来源失败明细'),
-                          ...sourceFailures.map(
-                            (item) => ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.link_off),
-                              title: Text(
-                                '${item['source'] ?? 'unknown'} · ${item['stage'] ?? 'unknown'}',
-                              ),
-                              subtitle: Text(
-                                'status: ${item['status']?.toString() ?? 'n/a'}',
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    )
+                  ? _worldImportEmptyPreview(task, errors, sourceFailures)
                   : ListView(
                       children: [
                         if (fallbackMode == 'model_generated')
                           ListTile(
                             leading: const Icon(Icons.auto_awesome),
-                            title: const Text('已启用模型沙盘兜底'),
+                            title: const Text('Model-generated fallback'),
                             subtitle: Text(
                               generatedNotice ??
-                                  '联网来源不可用，以下候选由模型基于设定与通用知识整理，未经过来源验证。',
+                                  'Online sources were unavailable; candidates are not source-verified.',
                             ),
                           ),
-                        if (relationships.isNotEmpty)
-                          ListTile(
-                            leading: const Icon(Icons.hub_outlined),
-                            title: Text('将同时导入 ${relationships.length} 条候选关系'),
-                            subtitle: const Text('导入后仍可继续手动编辑、删除或补充关系。'),
-                          ),
                         if (errors.isNotEmpty)
-                          const ListTile(
-                            leading: Icon(Icons.info_outline),
-                            title: Text('部分来源不可用，仍可导入已取得的结果。'),
+                          ListTile(
+                            leading: const Icon(Icons.error_outline),
+                            title: const Text('Warnings / errors'),
+                            subtitle: Text(errors.join('\n')),
                           ),
                         if (sourceFailures.isNotEmpty) ...[
                           const Divider(height: 12),
                           const Padding(
                             padding: EdgeInsets.symmetric(horizontal: 16),
-                            child: Text('来源失败明细'),
+                            child: Text('Source failures'),
                           ),
-                          ...sourceFailures.map(
-                            (item) => ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.link_off),
-                              title: Text(
-                                '${item['source'] ?? 'unknown'} · ${item['stage'] ?? 'unknown'}',
-                              ),
-                              subtitle: Text(
-                                'status: ${item['status']?.toString() ?? 'n/a'}',
-                              ),
-                            ),
-                          ),
+                          ...sourceFailures.map(_sourceFailureTile),
                           const Divider(height: 12),
                         ],
+                        if (relationships.isNotEmpty)
+                          ExpansionTile(
+                            leading: const Icon(Icons.hub_outlined),
+                            title: Text(
+                              'Relationships (${selectedRelationships.length}/${relationships.length})',
+                            ),
+                            children: [
+                              for (var index = 0;
+                                  index < relationships.length;
+                                  index++)
+                                CheckboxListTile(
+                                  value: selectedRelationships.contains(index),
+                                  title: Text(
+                                    relationships[index]['type']?.toString() ??
+                                        'relationship',
+                                  ),
+                                  subtitle: Text(
+                                    '${relationships[index]['source']} → ${relationships[index]['target']}'
+                                    '\n${relationships[index]['description'] ?? ''}',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onChanged: (checked) => setDialogState(() {
+                                    checked == true
+                                        ? selectedRelationships.add(index)
+                                        : selectedRelationships.remove(index);
+                                  }),
+                                ),
+                            ],
+                          ),
                         ...candidates.map(
                           (item) => CheckboxListTile(
                             value: selected.contains(item['id'].toString()),
                             title: Text(item['name'].toString()),
                             subtitle: Text(
-                              '${item['source_type'] ?? 'source'} · ${item['faction'] ?? ''}\n'
-                              '${item['summary']?.toString() ?? ''}',
-                              maxLines: 3,
+                              _candidateSubtitle(item),
+                              maxLines: 4,
                               overflow: TextOverflow.ellipsis,
+                            ),
+                            secondary: Icon(
+                              _candidateVerified(item)
+                                  ? Icons.verified_outlined
+                                  : Icons.info_outline,
                             ),
                             onChanged: (checked) => setDialogState(() {
                               final id = item['id'].toString();
@@ -553,7 +656,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
+                child: const Text('Cancel'),
               ),
               TextButton(
                 onPressed: () async {
@@ -563,29 +666,162 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                   );
                   if (context.mounted) Navigator.pop(context, false);
                 },
-                child: const Text('丢弃任务'),
+                child: const Text('Discard task'),
               ),
               FilledButton(
                 onPressed: selected.isEmpty
                     ? null
                     : () => Navigator.pop(context, true),
-                child: const Text('确认导入'),
+                child: Text(
+                  request.mode == 'create' ? 'Create & import' : 'Append',
+                ),
               ),
             ],
           ),
         ),
       );
       if (accepted == true) {
+        var targetWorldId = currentWorldId;
+        if (request.mode == 'create') {
+          final created = await widget.apiService.createPersonaWorld(
+            name: request.name,
+            theme: request.query,
+            background: 'Imported with AI Web Import.',
+          );
+          targetWorldId = created['id'].toString();
+        }
+        if (targetWorldId == null) return;
         await widget.apiService.confirmWorldImport(
           taskId: task['id'].toString(),
-          worldId: worldId,
+          worldId: targetWorldId,
           candidateIds: selected.toList(),
+          relationshipIndexes: selectedRelationships.toList()..sort(),
         );
-        await _selectWorld(worldId);
+        await _loadWorlds(selectId: targetWorldId);
       }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<Map<String, dynamic>> _pollWorldImportTask(
+    Map<String, dynamic> task,
+  ) async {
+    var current = task;
+    for (var attempt = 0; attempt < 60; attempt++) {
+      final status = current['status']?.toString() ?? '';
+      if (!{
+        'queued',
+        'pending',
+        'running',
+        'searching',
+        'extracting',
+      }.contains(status)) {
+        return current;
+      }
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (!mounted) return current;
+      current = await widget.apiService.fetchWorldImportTask(
+        current['id'].toString(),
+      );
+    }
+    return current;
+  }
+
+  Future<bool?> _confirmGeneratedFallback(Map<String, dynamic> task) {
+    final error = task['error']?.toString();
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('No verified characters found'),
+        content: Text(
+          [
+            if (error != null && error.isNotEmpty) error,
+            'You can retry later, or explicitly generate unverified AI candidates.',
+            'Generated candidates will be marked generated/unverified and will not include fake URLs.',
+          ].join('\n\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep failure'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Generate unverified candidates'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _worldImportEmptyPreview(
+    Map<String, dynamic> task,
+    List<String> errors,
+    List<Map<String, dynamic>> sourceFailures,
+  ) {
+    return ListView(
+      children: [
+        Text(task['error']?.toString() ?? 'No importable candidates found.'),
+        if (errors.isNotEmpty) ...[
+          const Divider(height: 16),
+          Text(errors.join('\n')),
+        ],
+        if (sourceFailures.isNotEmpty) ...[
+          const Divider(height: 16),
+          const Text('Source failures'),
+          ...sourceFailures.map(_sourceFailureTile),
+        ],
+      ],
+    );
+  }
+
+  Widget _sourceFailureTile(Map<String, dynamic> item) {
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.link_off),
+      title: Text(
+        '${item['source'] ?? 'unknown'} · ${item['stage'] ?? 'unknown'}',
+      ),
+      subtitle: Text('status: ${item['status']?.toString() ?? 'n/a'}'),
+    );
+  }
+
+  bool _candidateVerified(Map<String, dynamic> item) {
+    final verified = item['verified'] ?? item['source_verified'];
+    if (verified is bool) return verified;
+    final status = (item['verification_status'] ??
+            item['validation_status'] ??
+            item['status'] ??
+            '')
+        .toString()
+        .toLowerCase();
+    final sources = item['sources'] as List<dynamic>? ?? const [];
+    return sources.isNotEmpty ||
+        status == 'verified' ||
+        status == 'source_verified';
+  }
+
+  String _candidateSubtitle(Map<String, dynamic> item) {
+    final sources = item['sources'] as List<dynamic>? ?? const [];
+    final sourceLabels = sources
+        .cast<Map<String, dynamic>>()
+        .map((source) =>
+            source['title'] ?? source['source_type'] ?? source['url'])
+        .map((value) => value.toString())
+        .where((value) => value.trim().isNotEmpty)
+        .take(2)
+        .join(', ');
+    final status = _candidateVerified(item) ? 'verified' : 'unverified';
+    return [
+      '${item['source_type'] ?? 'source'} · $status · ${sources.length} source(s)',
+      if (sourceLabels.isNotEmpty) sourceLabels,
+      if ((item['faction'] ?? '').toString().isNotEmpty)
+        'Faction: ${item['faction']}',
+      item['summary']?.toString() ?? '',
+    ].where((line) => line.trim().isNotEmpty).join('\n');
   }
 
   Future<void> _simulate() async {
@@ -1024,7 +1260,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
               label: const Text('精选图库'),
             ),
             TextButton.icon(
-              onPressed: _searchOnline,
+              onPressed: _searchOnlineV08,
               icon: const Icon(Icons.travel_explore),
               label: const Text('联网搜索'),
             ),

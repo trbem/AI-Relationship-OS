@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -26,6 +26,7 @@ from app.schemas import (
     SettingsUpdateRequest,
 )
 from app.services.ai_client import AIClient, AIClientError
+from app.services.openai_web_search_service import OpenAIWebSearchService, WorldImportError
 
 router = APIRouter()
 
@@ -68,6 +69,10 @@ def _settings_response() -> dict:
         "ollama_model": settings.ollama_model,
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
+        "web_search_api_key_configured": bool(settings.web_search_api_key),
+        "web_search_base_url": settings.web_search_base_url,
+        "web_search_model": settings.web_search_model,
+        "web_search_timeout_seconds": settings.web_search_timeout_seconds,
         "data_directory": str(get_data_dir()),
     }
 
@@ -290,6 +295,29 @@ def test_ai_connection(
         "model": result["model"],
         "message": result["message"],
     }
+
+
+@router.post("/ai/test-web-search")
+def test_web_search_connection(
+    request: ConnectionTestRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    settings = get_settings()
+    updates = request.model_dump(exclude_unset=True)
+    try:
+        return OpenAIWebSearchService().test_connection(
+            api_key=str(updates.get("web_search_api_key", settings.web_search_api_key)),
+            base_url=str(updates.get("web_search_base_url", settings.web_search_base_url)),
+            model=str(updates.get("web_search_model", settings.web_search_model)),
+            timeout_seconds=float(
+                updates.get(
+                    "web_search_timeout_seconds",
+                    settings.web_search_timeout_seconds,
+                )
+            ),
+        )
+    except WorldImportError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail.to_dict()) from exc
 
 
 @router.post("/auth/register", response_model=LoginResponse)

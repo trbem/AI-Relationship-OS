@@ -2,6 +2,44 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
+from sqlalchemy import select
+
+from app.db import SessionLocal
+from app.models import WorldImportTask
+from app.services.openai_web_search_service import WORLD_IMPORT_ERROR_MESSAGES
+
+
+INCOMPLETE_WORLD_IMPORT_STATUSES = {
+    "queued",
+    "searching",
+    "extracting",
+    "running",
+    "pending",
+}
+
+
+def resume_incomplete_world_imports() -> None:
+    db = SessionLocal()
+    try:
+        rows = db.scalars(
+            select(WorldImportTask).where(
+                WorldImportTask.status.in_(INCOMPLETE_WORLD_IMPORT_STATUSES)
+            )
+        ).all()
+        for task in rows:
+            task.status = "failed"
+            task.stage = "resume"
+            task.progress = 1.0
+            task.error = (
+                '{"code":"NETWORK_UNAVAILABLE",'
+                f'"message":"{WORLD_IMPORT_ERROR_MESSAGES["NETWORK_UNAVAILABLE"]}",'
+                '"retryable":true,'
+                '"stage":"resume",'
+                '"technical_summary":"task interrupted by application restart"}'
+            )
+        db.commit()
+    finally:
+        db.close()
 
 
 RELATION_PROPERTIES = {

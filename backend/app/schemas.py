@@ -82,6 +82,10 @@ class SettingsUpdateRequest(BaseModel):
     ollama_base_url: str | None = Field(default=None, max_length=2048)
     ollama_timeout_seconds: float | None = Field(default=None, ge=5, le=600)
     ollama_model: str | None = Field(default=None, max_length=255)
+    web_search_api_key: str | None = Field(default=None, max_length=512)
+    web_search_base_url: str | None = Field(default=None, max_length=2048)
+    web_search_model: str | None = Field(default=None, max_length=255)
+    web_search_timeout_seconds: float | None = Field(default=None, ge=10, le=600)
     data_directory: str | None = Field(default=None, max_length=2048)
 
     @field_validator("llm_provider")
@@ -94,7 +98,7 @@ class SettingsUpdateRequest(BaseModel):
             raise ValueError("llm_provider must be openai_compatible or ollama")
         return normalized
 
-    @field_validator("llm_base_url", "ollama_base_url")
+    @field_validator("llm_base_url", "ollama_base_url", "web_search_base_url")
     @classmethod
     def validate_url(cls, value: str | None) -> str | None:
         if value is None or value.strip() == "":
@@ -104,7 +108,7 @@ class SettingsUpdateRequest(BaseModel):
             raise ValueError("base URL must start with http:// or https://")
         return normalized.rstrip("/")
 
-    @field_validator("llm_model", "completion_model", "ollama_model")
+    @field_validator("llm_model", "completion_model", "ollama_model", "web_search_model")
     @classmethod
     def validate_model(cls, value: str | None) -> str | None:
         if value is None:
@@ -125,6 +129,10 @@ class ConnectionTestRequest(BaseModel):
     ollama_base_url: str | None = Field(default=None, max_length=2048)
     ollama_timeout_seconds: float | None = Field(default=None, ge=5, le=600)
     ollama_model: str | None = Field(default=None, max_length=255)
+    web_search_api_key: str | None = Field(default=None, max_length=512)
+    web_search_base_url: str | None = Field(default=None, max_length=2048)
+    web_search_model: str | None = Field(default=None, max_length=255)
+    web_search_timeout_seconds: float | None = Field(default=None, ge=10, le=600)
 
     @field_validator("llm_provider")
     @classmethod
@@ -136,7 +144,7 @@ class ConnectionTestRequest(BaseModel):
             raise ValueError("llm_provider must be openai_compatible or ollama")
         return normalized
 
-    @field_validator("llm_base_url", "ollama_base_url")
+    @field_validator("llm_base_url", "ollama_base_url", "web_search_base_url")
     @classmethod
     def validate_url(cls, value: str | None) -> str | None:
         if value is None or value.strip() == "":
@@ -146,7 +154,7 @@ class ConnectionTestRequest(BaseModel):
             raise ValueError("base URL must start with http:// or https://")
         return normalized.rstrip("/")
 
-    @field_validator("llm_model", "ollama_model")
+    @field_validator("llm_model", "ollama_model", "web_search_model")
     @classmethod
     def validate_model(cls, value: str | None) -> str | None:
         if value is None:

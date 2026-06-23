@@ -212,6 +212,16 @@ class ApiService {
     ) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> testWebSearchConnection(
+    AppSettings settings,
+  ) async {
+    return await _jsonRequest(
+      'POST',
+      '/api/system/ai/test-web-search',
+      body: settings.toJson(),
+    ) as Map<String, dynamic>;
+  }
+
   Future<List<PersonSummary>> fetchPersons() async {
     final data = await _jsonRequest('GET', '/api/person') as List<dynamic>;
     return data
@@ -591,17 +601,43 @@ class ApiService {
     ) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> fetchWorldImportTask(String taskId) async {
+    return await _jsonRequest(
+      'GET',
+      '/api/world-imports/${Uri.encodeComponent(taskId)}',
+    ) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> generateWorldImportFallback({
+    required String taskId,
+    String mode = 'generate_missing',
+    int? targetCount,
+  }) async {
+    return await _jsonRequest(
+      'POST',
+      '/api/world-imports/${Uri.encodeComponent(taskId)}/generate-fallback',
+      body: {
+        'mode': mode,
+        if (targetCount != null) 'target_count': targetCount,
+      },
+    ) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> confirmWorldImport({
     required String taskId,
     required String worldId,
     required List<String> candidateIds,
+    List<int> relationshipIndexes = const [],
+    String destination = 'append',
   }) async {
     return await _jsonRequest(
       'POST',
       '/api/world-imports/${Uri.encodeComponent(taskId)}/confirm',
       body: {
         'world_id': worldId,
+        'destination': destination,
         'candidate_ids': candidateIds,
+        'relationship_indexes': relationshipIndexes,
       },
     ) as Map<String, dynamic>;
   }

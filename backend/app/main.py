@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db import init_db
 from app.logging_config import configure_logging
 from app.services.import_service import resume_incomplete_imports
+from app.services.world_import_service import resume_incomplete_world_imports
 
 settings = get_settings()
 logger = logging.getLogger("relationship_os")
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     init_db()
     resume_incomplete_imports()
+    resume_incomplete_world_imports()
     logger.info("Relationship OS backend started")
     yield
     logger.info("Relationship OS backend stopped")

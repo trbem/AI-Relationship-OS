@@ -1,7 +1,7 @@
-import json
+﻿import json
+import threading
 from datetime import datetime
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.catalog import PERSONA_CATALOG, select_template
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models import (
     PersonaWorld,
     User,
@@ -22,9 +22,14 @@ from app.models import (
     WorldSource,
 )
 from app.services.world_ai_service import WorldAIService
-from app.services.world_import_service import WorldImportService
+from app.services.openai_web_search_service import (
+    WORLD_IMPORT_ERROR_MESSAGES,
+    OpenAIWebSearchService,
+    WorldImportError,
+)
 
 router = APIRouter()
+WORLD_CAPACITY = 50
 ROLE_DISCLAIMER = "本结果是基于人物设定的角色沙盘，不是对真实人物行为的预测。"
 
 
@@ -91,19 +96,20 @@ class RelationshipPatch(BaseModel):
 
 class CatalogImportRequest(BaseModel):
     template_id: str
-    limit: int = Field(default=20, ge=1, le=40)
+    limit: int = Field(default=20, ge=1, le=50)
     factions: list[str] = []
     core_persona_keys: list[str] = []
 
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=255)
-    limit: int = Field(default=20, ge=1, le=40)
+    limit: int = Field(default=50, ge=1, le=50)
 
 
 class ConfirmImportRequest(BaseModel):
-    world_id: str
-    candidate_ids: list[str] = Field(min_length=1, max_length=40)
+    world_id: str | None = None
+    destination: str = Field(default="append", pattern="^(create|append)$")
+    candidate_ids: list[str] = Field(min_length=1, max_length=50)
     relationship_indexes: list[int] = []
 
 
@@ -112,7 +118,7 @@ class DiscardImportRequest(BaseModel):
 
 
 class SimulationRequest(BaseModel):
-    title: str = Field(default="角色沙盘", min_length=1, max_length=255)
+    title: str = Field(default="瑙掕壊娌欑洏", min_length=1, max_length=255)
     scenario: str = Field(min_length=1, max_length=5000)
     participant_ids: list[str] = Field(min_length=1, max_length=8)
     rounds: int = Field(default=3, ge=1, le=5)
@@ -294,8 +300,8 @@ def create_persona(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     world = _world(db, world_id, current_user.id)
-    if len(world.personas) >= 40:
-        raise HTTPException(status_code=400, detail="每个角色世界最多 40 人")
+    if len(world.personas) >= WORLD_CAPACITY:
+        raise HTTPException(status_code=400, detail=f"每个角色世界最多 {WORLD_CAPACITY} 人")
     data = request.model_dump()
     item = WorldPersona(
         world_id=world.id,
@@ -486,9 +492,9 @@ def import_catalog(
     template = PERSONA_CATALOG.get(request.template_id)
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
-    remaining = 40 - len(world.personas)
+    remaining = WORLD_CAPACITY - len(world.personas)
     if remaining <= 0:
-        raise HTTPException(status_code=400, detail="角色世界已达到 40 人上限")
+        raise HTTPException(status_code=400, detail=f"角色世界已达到 {WORLD_CAPACITY} 人上限")
     was_empty = not world.personas
     personas, relationships = select_template(
         template,
@@ -560,7 +566,16 @@ def import_catalog(
     return {"imported_personas": imported, "world": _world_dict(world, details=True)}
 
 
-@router.post("/world-imports/search", status_code=201)
+class ResolveImportRequest(BaseModel):
+    selected_option_id: str = Field(min_length=1, max_length=255)
+
+
+class GenerateFallbackRequest(BaseModel):
+    mode: str = Field(default="generate_missing", pattern="^(generate_missing|fill_to_limit)$")
+    target_count: int | None = Field(default=None, ge=1, le=50)
+
+
+@router.post("/world-imports/search", status_code=202)
 def search_world_import(
     request: SearchRequest,
     db: Session = Depends(get_db),
@@ -569,29 +584,24 @@ def search_world_import(
     task = WorldImportTask(
         user_id=current_user.id,
         query=request.query,
-        requested_limit=request.limit,
-        status="running",
-        progress=0.1,
+        requested_limit=min(request.limit, WORLD_CAPACITY),
+        status="queued",
+        stage="queued",
+        progress=0.0,
+        result_json=json.dumps(
+            {
+                "query": request.query,
+                "candidates": [],
+                "relationships": [],
+                "errors": [],
+                "source_failures": [],
+            },
+            ensure_ascii=False,
+        ),
     )
     db.add(task)
     db.commit()
-    try:
-        result = WorldImportService().search(request.query, request.limit)
-        if not result.get("candidates"):
-            result = WorldAIService().generated_import_preview(
-                request.query,
-                request.limit,
-                source_failures=result.get("source_failures", []),
-            )
-        task.result_json = json.dumps(result, ensure_ascii=False)
-        task.status = "partial" if result.get("partial") else "preview"
-        task.stage = "confirm"
-        task.progress = 1.0
-    except (httpx.HTTPError, ValueError) as exc:
-        task.status = "failed"
-        task.error = f"联网搜索失败：{exc}"
-        task.progress = 1.0
-    db.commit()
+    _start_world_import_task(task.id)
     return _task_dict(task)
 
 
@@ -601,24 +611,217 @@ def get_world_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    task = db.get(WorldImportTask, task_id)
-    if not task or task.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="导入任务不存在")
+    task = _import_task(db, task_id, current_user.id)
     return _task_dict(task)
 
 
 def _task_dict(task: WorldImportTask) -> dict:
+    result = _json(task.result_json, {})
+    error = _json(task.error, None) if task.error else None
     return {
         "id": task.id,
+        "task_id": task.id,
         "world_id": task.world_id,
         "query": task.query,
         "status": task.status,
         "stage": task.stage,
         "progress": task.progress,
         "requested_limit": task.requested_limit,
-        "result": _json(task.result_json, {}),
-        "error": task.error,
+        "result": result,
+        "error": error,
+        "can_retry": task.status in {"failed", "partial"},
     }
+
+
+def _start_world_import_task(task_id: str) -> None:
+    thread = threading.Thread(
+        target=_run_world_import_task,
+        args=(task_id,),
+        name=f"world-import-{task_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _run_world_import_task(task_id: str) -> None:
+    db = SessionLocal()
+    try:
+        task = db.get(WorldImportTask, task_id)
+        if not task or task.status in {"discarded", "completed"}:
+            return
+        task.status = "searching"
+        task.stage = "searching"
+        task.progress = 0.15
+        db.commit()
+        result = OpenAIWebSearchService().search_world(task.query, task.requested_limit)
+        task.result_json = json.dumps(result, ensure_ascii=False)
+        if result.get("status_hint") == "needs_disambiguation":
+            task.status = "needs_disambiguation"
+            task.stage = "needs_disambiguation"
+            task.progress = 0.45
+        else:
+            task.status = "partial" if result.get("partial") else "preview"
+            task.stage = "preview"
+            task.progress = 1.0
+        task.error = None
+    except WorldImportError as exc:
+        task = db.get(WorldImportTask, task_id)
+        if task:
+            _fail_task(task, exc.detail.to_dict())
+    except Exception as exc:  # pragma: no cover - background safety net.
+        task = db.get(WorldImportTask, task_id)
+        if task:
+            _fail_task(
+                task,
+                _error_detail(
+                    "INVALID_PROVIDER_RESPONSE",
+                    stage="extracting",
+                    retryable=True,
+                    technical_summary=exc.__class__.__name__,
+                ),
+            )
+    finally:
+        db.commit()
+        db.close()
+
+
+def _fail_task(task: WorldImportTask, error: dict) -> None:
+    result = _json(task.result_json, {})
+    result.setdefault("errors", []).append(error)
+    task.result_json = json.dumps(result, ensure_ascii=False)
+    task.status = "failed"
+    task.stage = error.get("stage") or task.stage
+    task.progress = 1.0
+    task.error = json.dumps(error, ensure_ascii=False)
+
+
+def _error_detail(
+    code: str,
+    *,
+    stage: str,
+    retryable: bool,
+    technical_summary: str = "",
+) -> dict:
+    return {
+        "code": code,
+        "message": WORLD_IMPORT_ERROR_MESSAGES.get(code, code),
+        "retryable": retryable,
+        "stage": stage,
+        "technical_summary": technical_summary[:500],
+    }
+
+
+def _import_task(db: Session, task_id: str, user_id: str) -> WorldImportTask:
+    task = db.get(WorldImportTask, task_id)
+    if not task or task.user_id != user_id:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return task
+
+
+@router.post("/world-imports/{task_id}/retry", status_code=202)
+def retry_world_import(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = _import_task(db, task_id, current_user.id)
+    if task.status not in {"failed", "partial"}:
+        raise HTTPException(status_code=409, detail="当前任务状态不能重试")
+    task.status = "queued"
+    task.stage = "queued"
+    task.progress = 0.0
+    task.error = None
+    db.commit()
+    _start_world_import_task(task.id)
+    return _task_dict(task)
+
+
+@router.post("/world-imports/{task_id}/cancel")
+def cancel_world_import(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = _import_task(db, task_id, current_user.id)
+    if task.status in {"completed", "discarded"}:
+        return _task_dict(task)
+    task.status = "discarded"
+    task.stage = "discarded"
+    task.error = json.dumps(
+        _error_detail(
+            "SEARCH_TIMEOUT",
+            stage="discarded",
+            retryable=True,
+            technical_summary="cancelled by user",
+        ),
+        ensure_ascii=False,
+    )
+    db.commit()
+    return _task_dict(task)
+
+
+@router.post("/world-imports/{task_id}/resolve", status_code=202)
+def resolve_world_import(
+    task_id: str,
+    request: ResolveImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = _import_task(db, task_id, current_user.id)
+    if task.status != "needs_disambiguation":
+        return _task_dict(task)
+    result = _json(task.result_json, {})
+    options = result.get("disambiguation_options", [])
+    selected = next(
+        (item for item in options if str(item.get("id")) == request.selected_option_id),
+        None,
+    )
+    if selected is None:
+        raise HTTPException(status_code=404, detail="未找到该作品候选")
+    task.query = selected.get("title") or task.query
+    task.status = "queued"
+    task.stage = "queued"
+    task.progress = 0.0
+    task.error = None
+    db.commit()
+    _start_world_import_task(task.id)
+    return _task_dict(task)
+
+
+@router.post("/world-imports/{task_id}/generate-fallback")
+def generate_world_import_fallback(
+    task_id: str,
+    request: GenerateFallbackRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = _import_task(db, task_id, current_user.id)
+    result = _json(task.result_json, {})
+    current = len(result.get("candidates", []))
+    target = max(1, min(WORLD_CAPACITY, request.target_count or task.requested_limit))
+    limit = max(1, target - current) if request.mode == "generate_missing" else target
+    generated = WorldAIService().generated_import_preview(
+        task.query,
+        limit,
+        source_failures=result.get("source_failures", []),
+    )
+    existing_ids = {item.get("id") for item in result.get("candidates", [])}
+    additions = [
+        item for item in generated.get("candidates", [])
+        if item.get("id") not in existing_ids
+    ]
+    result.setdefault("candidates", []).extend(additions[: max(0, target - current)])
+    result.setdefault("relationships", []).extend(generated.get("relationships", []))
+    result["fallback_mode"] = "model_generated"
+    result["generated_notice"] = generated.get("generated_notice")
+    result["partial"] = True
+    task.result_json = json.dumps(result, ensure_ascii=False)
+    task.status = "partial" if result.get("candidates") else "failed"
+    task.stage = "preview" if result.get("candidates") else "failed"
+    task.progress = 1.0
+    task.error = None
+    db.commit()
+    return _task_dict(task)
 
 
 @router.post("/world-imports/{task_id}/confirm")
@@ -628,17 +831,19 @@ def confirm_world_import(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    task = db.get(WorldImportTask, task_id)
-    if not task or task.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="导入任务不存在")
-    world = _world(db, request.world_id, current_user.id)
+    task = _import_task(db, task_id, current_user.id)
     result = _json(task.result_json, {})
+    if task.status not in {"preview", "partial"}:
+        raise HTTPException(status_code=409, detail="任务尚未进入可确认状态")
+    world = _resolve_import_destination(db, request, result, current_user.id)
     selected = [
         item for item in result.get("candidates", []) if item.get("id") in request.candidate_ids
     ]
-    selected = [item for item in selected if item.get("sources")]
-    if len(world.personas) + len(selected) > 40:
-        raise HTTPException(status_code=400, detail="确认后人物数量将超过 40")
+    selected = [item for item in selected if _candidate_is_importable(item)]
+    if not selected:
+        raise HTTPException(status_code=400, detail="没有可导入的人物；联网候选需要真实 URL，生成候选需要显式触发")
+    if len(world.personas) + len(selected) > WORLD_CAPACITY:
+        raise HTTPException(status_code=400, detail=f"确认后人物数量将超过 {WORLD_CAPACITY}")
     imported = 0
     external_to_persona: dict[str, WorldPersona] = {}
     for data in selected:
@@ -656,25 +861,30 @@ def confirm_world_import(
             world_id=world.id,
             name=data["name"],
             aliases_json=json.dumps(data.get("aliases", []), ensure_ascii=False),
-            summary=data.get("summary") or data.get("description") or "来源未提供摘要",
+            summary=data.get("summary") or data.get("description") or "来源未提供摘要。",
             traits_json=json.dumps(data.get("traits", []), ensure_ascii=False),
             motivations_json=json.dumps(data.get("motivations", []), ensure_ascii=False),
             communication_json=json.dumps(data.get("communication", []), ensure_ascii=False),
+            values_json=json.dumps(data.get("values", []), ensure_ascii=False),
+            abilities_json=json.dumps(data.get("abilities", []), ensure_ascii=False),
             faction=data.get("faction"),
-            source_type=data.get("source_type", "wikidata"),
+            source_type=data.get("source_type", "openai_web_search"),
+            background=data.get("background"),
             source_ref=data["id"],
-            setting_completeness=0.5 if data.get("source_type") == "generated" else 0.4,
+            setting_completeness=0.55 if data.get("verification_status") == "web_verified" else 0.35,
         )
         db.add(item)
         db.flush()
         external_to_persona[data["id"]] = item
         imported += 1
         for source in data.get("sources", []):
+            if not _valid_source_url(source.get("url")):
+                continue
             db.add(
                 WorldSource(
                     world_id=world.id,
                     persona_id=item.id,
-                    source_type=source["source_type"],
+                    source_type=source.get("source_type") or data.get("source_type", "openai_web_search"),
                     external_id=source.get("external_id"),
                     url=source["url"],
                     title=source.get("title"),
@@ -722,6 +932,43 @@ def confirm_world_import(
         "imported_relationships": imported_relationships,
         "world": _world_dict(world, details=True),
     }
+
+
+def _candidate_is_importable(item: dict) -> bool:
+    if item.get("verification_status") == "generated_unverified":
+        return item.get("source_type") == "generated_unverified"
+    return any(_valid_source_url(source.get("url")) for source in item.get("sources", []))
+
+
+def _valid_source_url(value: object) -> bool:
+    text = str(value or "")
+    return text.startswith(("http://", "https://"))
+
+
+def _resolve_import_destination(
+    db: Session,
+    request: ConfirmImportRequest,
+    result: dict,
+    user_id: str,
+) -> PersonaWorld:
+    if request.destination == "append" or request.world_id:
+        if not request.world_id:
+            raise HTTPException(status_code=400, detail="追加导入需要 world_id")
+        return _world(db, request.world_id, user_id)
+    work = result.get("work") if isinstance(result.get("work"), dict) else {}
+    name = str(work.get("title") or result.get("query") or "AI 导入角色世界").strip()
+    world = PersonaWorld(
+        user_id=user_id,
+        name=name[:255],
+        theme=str(work.get("medium") or "AI 联网导入")[:255],
+        world_type="fictional",
+        source_type="openai_web_search",
+        version=str(work.get("version") or "")[:64] or None,
+        description=work.get("summary") or None,
+    )
+    db.add(world)
+    db.flush()
+    return world
 
 
 @router.post("/world-imports/{task_id}/discard")
@@ -962,7 +1209,7 @@ def promote_world_event(
         "summary": event.summary,
         "event_type": event.event_type,
         "is_simulated": True,
-        "label": "虚构衍生内容",
+        "label": "\u865a\u6784\u884d\u751f\u5185\u5bb9",
     }
 
 
@@ -993,8 +1240,8 @@ def import_world(
     if not isinstance(data, dict) or not data.get("name"):
         raise HTTPException(status_code=400, detail="角色世界内容无效")
     personas = data.get("personas", [])
-    if len(personas) > 40:
-        raise HTTPException(status_code=400, detail="角色世界人物超过 40 人")
+    if len(personas) > WORLD_CAPACITY:
+        raise HTTPException(status_code=400, detail=f"角色世界人物超过 {WORLD_CAPACITY} 人")
     world = PersonaWorld(
         user_id=current_user.id,
         name=data["name"],
@@ -1012,7 +1259,7 @@ def import_world(
         item = WorldPersona(
             world_id=world.id,
             name=source["name"],
-            summary=source.get("summary") or "未提供简介",
+            summary=source.get("summary") or "未提供简介。",
             aliases_json=json.dumps(source.get("aliases", []), ensure_ascii=False),
             traits_json=json.dumps(source.get("traits", []), ensure_ascii=False),
             motivations_json=json.dumps(source.get("motivations", []), ensure_ascii=False),
