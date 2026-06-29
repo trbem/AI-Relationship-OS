@@ -615,6 +615,15 @@ class ApiService {
     ) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> retryWorldImport({
+    required String taskId,
+  }) async {
+    return await _jsonRequest(
+      'POST',
+      '/api/world-imports/${Uri.encodeComponent(taskId)}/retry',
+    ) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> resolveWorldImport({
     required String taskId,
     required String selectedOptionId,

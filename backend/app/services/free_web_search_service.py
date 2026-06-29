@@ -22,6 +22,7 @@ SEARCH_TIMEOUT_SECONDS = 20.0
 FETCH_TIMEOUT_SECONDS = 12.0
 MAX_SEARCH_SOURCES = 20
 MAX_FETCHED_SOURCES = 10
+COMPACT_RETRY_SOURCES = 6
 ProgressCallback = Callable[[str, float, str], None]
 
 
@@ -38,6 +39,14 @@ class WebSource:
             "url": self.url,
             "snippet": self.snippet[:500],
             "excerpt": self.excerpt[:1200],
+        }
+
+    def to_compact_prompt_dict(self) -> dict[str, str]:
+        return {
+            "title": self.title[:160],
+            "url": self.url,
+            "snippet": self.snippet[:260],
+            "excerpt": self.excerpt[:420],
         }
 
 
@@ -75,27 +84,12 @@ class FreeWebWorldSearchService:
             )
 
         try:
-            _report(
-                progress_callback,
-                "extracting",
-                0.72,
-                "extracting characters with current AI model",
-            )
-            payload = AIClient().chat_json(
-                system_prompt=(
-                    "You are a character-world import assistant. Extract only "
-                    "short factual summaries from the supplied web search "
-                    "sources. Return a single JSON object. Do not invent URLs "
-                    "and do not reproduce long copyrighted text."
-                ),
-                user_prompt=_extraction_prompt(
-                    query,
-                    limit,
-                    sources,
-                    target_language,
-                ),
-                temperature=0.1,
-                timeout_seconds=120,
+            payload = self._extract_payload_with_retries(
+                query=query,
+                limit=limit,
+                sources=sources,
+                language=target_language,
+                progress_callback=progress_callback,
             )
         except AIClientError as exc:
             text = str(exc)
@@ -110,7 +104,7 @@ class FreeWebWorldSearchService:
                 "EXTRACTION_FAILED",
                 stage="extracting",
                 retryable=True,
-                technical_summary=str(exc)[:300],
+                technical_summary=_safe_extraction_summary(exc),
             ) from exc
 
         normalized = _normalize_world_payload(
@@ -167,6 +161,76 @@ class FreeWebWorldSearchService:
             )
         return normalized
 
+    def _extract_payload_with_retries(
+        self,
+        *,
+        query: str,
+        limit: int,
+        sources: list[WebSource],
+        language: str,
+        progress_callback: ProgressCallback | None,
+    ) -> dict[str, Any]:
+        client = AIClient()
+        _report(
+            progress_callback,
+            "extracting",
+            0.72,
+            "extracting characters with current AI model",
+        )
+        try:
+            return client.chat_json(
+                system_prompt=_json_only_system_prompt(),
+                user_prompt=_extraction_prompt(query, limit, sources, language),
+                temperature=0.0,
+                timeout_seconds=120,
+            )
+        except AIClientError as first_error:
+            if not _is_invalid_json_error(first_error):
+                raise
+            raw_content = getattr(first_error, "raw_content", None)
+            if raw_content:
+                try:
+                    _report(
+                        progress_callback,
+                        "extracting",
+                        0.80,
+                        "repairing model JSON response",
+                    )
+                    return client.chat_json(
+                        system_prompt=_json_repair_system_prompt(),
+                        user_prompt=_json_repair_prompt(raw_content),
+                        temperature=0.0,
+                        timeout_seconds=90,
+                    )
+                except AIClientError as repair_error:
+                    if not _is_invalid_json_error(repair_error):
+                        raise
+            _report(
+                progress_callback,
+                "extracting",
+                0.86,
+                "retrying extraction with compact sources",
+            )
+            try:
+                return client.chat_json(
+                    system_prompt=_json_only_system_prompt(),
+                    user_prompt=_compact_extraction_prompt(
+                        query,
+                        limit,
+                        sources[:COMPACT_RETRY_SOURCES],
+                        language,
+                    ),
+                    temperature=0.0,
+                    timeout_seconds=90,
+                )
+            except AIClientError as compact_error:
+                if _is_invalid_json_error(compact_error):
+                    raise AIClientError(
+                        "INVALID_JSON_RESPONSE: found web sources, but the model did not return parseable character JSON after repair and compact retry",
+                        code="INVALID_JSON_RESPONSE",
+                    ) from compact_error
+                raise
+
     def _rewrite_language(
         self,
         normalized: dict[str, Any],
@@ -218,7 +282,7 @@ class FreeWebWorldSearchService:
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 RelationshipOS/0.8.5"
+                "AppleWebKit/537.36 RelationshipOS/0.8.6"
             )
         }
         failures: list[dict[str, Any]] = []
@@ -533,6 +597,23 @@ def _language_label(language: str) -> str:
     return "Simplified Chinese" if language == "zh" else "English"
 
 
+def _json_only_system_prompt() -> str:
+    return (
+        "You extract character-world data from supplied web sources. "
+        "Return exactly one raw JSON object. No Markdown, no code fences, "
+        "no comments, no examples, no explanation, no natural-language prefix. "
+        "Use only supplied URLs as sources. Do not invent URLs."
+    )
+
+
+def _json_repair_system_prompt() -> str:
+    return (
+        "You repair malformed JSON. Return exactly one raw JSON object. "
+        "Do not add new facts, characters, relationships, URLs, or sources. "
+        "Do not output Markdown or explanation."
+    )
+
+
 def _extraction_prompt(
     query: str,
     limit: int,
@@ -542,26 +623,19 @@ def _extraction_prompt(
     source_payload = [source.to_prompt_dict() for source in sources]
     target = _language_label(language)
     return f"""
-The user wants to import a character world for: {query}
+Task: import a character world for "{query}".
+Target language for user-facing text: {target}.
+Use only the supplied source URLs. Extract at most {limit} characters.
+If the sources support fewer characters, return fewer. Every candidate must cite
+at least one supplied URL. Keep summaries short and factual.
 
-Below are web sources collected by the application. Use only these sources to
-identify the work/world and extract up to {limit} character candidates. If the
-sources only support fewer people, return fewer people. Every character must
-cite at least one URL from the supplied sources. Do not invent URLs. Do not copy
-long original passages; only output short factual summaries.
+Output must be one valid JSON object only. Required top-level keys:
+work, disambiguation_options, candidates, relationships.
 
-Target output language: {target}.
-All user-facing fields must use {target}: work title/summary, disambiguation
-title/reason, character names when a common translated name exists, aliases,
-factions, summaries, traits, motivations, values, abilities, communication,
-background, and relationship descriptions. Source titles and URLs may stay in
-their original language. If sources are English but the target is Simplified
-Chinese, translate and summarize the facts into Chinese.
-
-Source JSON:
+Sources:
 {json.dumps(source_payload, ensure_ascii=False)}
 
-Return only one JSON object with this shape:
+JSON shape:
 {{
   "work": {{"title": "", "author": "", "version": "", "medium": "", "summary": ""}},
   "disambiguation_options": [
@@ -589,6 +663,54 @@ Return only one JSON object with this shape:
   ]
 }}
 """
+
+
+def _compact_extraction_prompt(
+    query: str,
+    limit: int,
+    sources: list[WebSource],
+    language: str = "zh",
+) -> str:
+    source_payload = [source.to_compact_prompt_dict() for source in sources]
+    target = _language_label(language)
+    return f"""
+Task: extract importable characters for "{query}".
+Language: {target}.
+Use only these URLs. Return up to {limit} candidates. Relationships may be [].
+Return one valid JSON object only, with keys work, disambiguation_options,
+candidates, relationships. No Markdown or explanation.
+
+Sources:
+{json.dumps(source_payload, ensure_ascii=False)}
+
+Each candidate needs: id, name, aliases, summary, faction, traits, motivations,
+values, abilities, communication, background, confidence, sources.
+"""
+
+
+def _json_repair_prompt(raw_content: str) -> str:
+    return f"""
+Repair this malformed model output into one valid JSON object matching the
+character-world import structure. Preserve only facts, characters, relationships,
+and source URLs that already appear in the text. Do not invent missing URLs.
+
+Malformed output:
+{raw_content[:4000]}
+"""
+
+
+def _is_invalid_json_error(exc: AIClientError) -> bool:
+    code = getattr(exc, "code", None)
+    return code == "INVALID_JSON_RESPONSE" or "invalid_json_response" in str(exc).lower()
+
+
+def _safe_extraction_summary(exc: AIClientError) -> str:
+    if _is_invalid_json_error(exc):
+        return (
+            "找到网页，但模型没有返回可解析的人物 JSON；"
+            "已尝试自动修复和小批量重试。"
+        )
+    return str(exc)[:300]
 
 
 def _rewrite_prompt(payload: dict[str, Any], language: str) -> str:

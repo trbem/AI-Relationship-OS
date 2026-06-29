@@ -637,8 +637,23 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       final canGenerateFallback =
           {'failed', 'preview', 'partial'}.contains(taskStatus);
       if (candidates.isEmpty && canGenerateFallback) {
-        final useFallback = await _confirmGeneratedFallback(task);
-        if (useFallback == true) {
+        final fallbackAction = await _confirmGeneratedFallback(task);
+        if (fallbackAction == 'retry') {
+          task = await widget.apiService.retryWorldImport(
+            taskId: task['id'].toString(),
+          );
+          task = await _pollWorldImportTask(task, attempts: 120);
+          task = await _resolveWorldImportDisambiguation(task);
+          if (!mounted || task.isEmpty) return;
+          result = task['result'] as Map<String, dynamic>? ?? {};
+          candidates = (result['candidates'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          sourceFailures = (result['source_failures'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          errors = (result['errors'] as List<dynamic>? ?? [])
+              .map((item) => item.toString())
+              .toList();
+        } else if (fallbackAction == 'fallback') {
           task = await widget.apiService.generateWorldImportFallback(
             taskId: task['id'].toString(),
             mode: 'generate_missing',
@@ -1003,31 +1018,83 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
     );
   }
 
-  Future<bool?> _confirmGeneratedFallback(Map<String, dynamic> task) {
-    final error = task['error']?.toString();
-    return showDialog<bool>(
+  Future<String?> _confirmGeneratedFallback(Map<String, dynamic> task) {
+    final title = _worldImportFailureTitle(task);
+    final message = _worldImportFailureMessage(task);
+    return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('No verified characters found'),
+        title: Text(title),
         content: Text(
           [
-            if (error != null && error.isNotEmpty) error,
+            message,
             'You can retry later, or explicitly generate unverified AI candidates.',
             'Generated candidates will be marked generated/unverified and will not include fake URLs.',
           ].join('\n\n'),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context, 'keep'),
             child: const Text('Keep failure'),
           ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'retry'),
+            child: const Text('Retry'),
+          ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(context, 'fallback'),
             child: const Text('Generate unverified candidates'),
           ),
         ],
       ),
     );
+  }
+
+  String _worldImportFailureTitle(Map<String, dynamic> task) {
+    return _worldImportErrorCode(task) == 'EXTRACTION_FAILED'
+        ? 'Character JSON extraction failed'
+        : 'No verified characters found';
+  }
+
+  String _worldImportFailureMessage(Map<String, dynamic> task) {
+    final code = _worldImportErrorCode(task);
+    final message = _worldImportErrorMessage(task);
+    final technicalSummary = _worldImportTechnicalSummary(task);
+    if (code == 'EXTRACTION_FAILED') {
+      return [
+        'Found web pages, but the model did not return parseable character JSON.',
+        if (message.isNotEmpty) message,
+        if (technicalSummary.isNotEmpty) technicalSummary,
+      ].join('\n');
+    }
+    return [
+      if (message.isNotEmpty) message else task['error']?.toString() ?? '',
+      if (technicalSummary.isNotEmpty) technicalSummary,
+    ].where((item) => item.isNotEmpty).join('\n');
+  }
+
+  String _worldImportErrorCode(Map<String, dynamic> task) {
+    final error = task['error'];
+    if (error is Map<String, dynamic>) {
+      return error['code']?.toString() ?? '';
+    }
+    return '';
+  }
+
+  String _worldImportErrorMessage(Map<String, dynamic> task) {
+    final error = task['error'];
+    if (error is Map<String, dynamic>) {
+      return error['message']?.toString() ?? '';
+    }
+    return error?.toString() ?? '';
+  }
+
+  String _worldImportTechnicalSummary(Map<String, dynamic> task) {
+    final error = task['error'];
+    if (error is Map<String, dynamic>) {
+      return error['technical_summary']?.toString() ?? '';
+    }
+    return '';
   }
 
   Widget _worldImportEmptyPreview(
@@ -1037,8 +1104,8 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
   ) {
     final status = task['status']?.toString() ?? '';
     final hasSourceFailures = sourceFailures.isNotEmpty;
-    final message = task['error']?.toString();
-    final summary = message != null && message.isNotEmpty
+    final message = _worldImportFailureMessage(task);
+    final summary = message.isNotEmpty
         ? message
         : hasSourceFailures
             ? 'Found web pages, but no character information could be extracted.'
@@ -1050,7 +1117,11 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
         ListTile(
           leading: const Icon(Icons.info_outline),
           title: Text(
-            status == 'failed' ? 'Import failed' : 'No importable characters',
+            _worldImportErrorCode(task) == 'EXTRACTION_FAILED'
+                ? 'Model JSON extraction failed'
+                : status == 'failed'
+                    ? 'Import failed'
+                    : 'No importable characters',
           ),
           subtitle: Text(summary),
         ),

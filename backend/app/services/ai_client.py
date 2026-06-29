@@ -11,7 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 class AIClientError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        raw_content: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.raw_content = raw_content
 
 
 class AIClient:
@@ -376,27 +385,83 @@ class AIClient:
         if not isinstance(content, str) or not content.strip():
             raise AIClientError("LLM returned empty content")
 
+        content = content.strip().lstrip("\ufeff")
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            extracted = self._extract_json_object(content)
-            if extracted is None:
-                raise AIClientError("LLM response is not valid JSON")
-            try:
-                return json.loads(extracted)
-            except json.JSONDecodeError as exc:
-                raise AIClientError("Extracted LLM JSON is invalid") from exc
+            for extracted in self._json_object_candidates(content):
+                for candidate in (extracted, self._repair_json_text(extracted)):
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+            raise AIClientError(
+                "INVALID_JSON_RESPONSE: LLM returned content that could not be parsed as JSON",
+                code="INVALID_JSON_RESPONSE",
+                raw_content=content[:4000],
+            )
 
     def _extract_json_object(self, content: str) -> str | None:
-        fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", content)
-        if fenced:
-            return fenced.group(1)
+        candidates = self._json_object_candidates(content)
+        return candidates[0] if candidates else None
 
-        start = content.find("{")
-        end = content.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            return None
-        return content[start : end + 1]
+    def _json_object_candidates(self, content: str) -> list[str]:
+        candidates: list[str] = []
+        for fenced in re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", content, re.I):
+            block = fenced.group(1).strip().lstrip("\ufeff")
+            if block.startswith("{"):
+                candidates.append(block)
+            else:
+                candidates.extend(self._balanced_json_objects(block))
+
+        candidates.extend(self._balanced_json_objects(content))
+        unique: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            value = candidate.strip()
+            if value and value not in seen:
+                seen.add(value)
+                unique.append(value)
+        return unique
+
+    def _balanced_json_objects(self, content: str) -> list[str]:
+        results: list[str] = []
+        start: int | None = None
+        depth = 0
+        in_string = False
+        escape = False
+        for index, char in enumerate(content):
+            if start is None:
+                if char == "{":
+                    start = index
+                    depth = 1
+                    in_string = False
+                    escape = False
+                continue
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    results.append(content[start : index + 1])
+                    start = None
+        return results
+
+    def _repair_json_text(self, content: str) -> str:
+        value = content.strip().lstrip("\ufeff")
+        value = value.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+        value = re.sub(r",\s*([}\]])", r"\1", value)
+        return value
 
     def _should_try_ollama(self, exc: AIClientError) -> bool:
         if not self.settings.llm_fallback_enabled:

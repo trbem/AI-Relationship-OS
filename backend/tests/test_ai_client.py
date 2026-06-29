@@ -150,3 +150,42 @@ def test_chat_json_passes_timeout_override(monkeypatch) -> None:
         timeout_seconds=120,
     ) == {"ok": True}
     assert captured["timeout_seconds"] == 120
+
+
+def test_parse_json_content_reads_fenced_json() -> None:
+    client = make_client()
+
+    assert client._parse_json_content('```json\n{"ok": true}\n```') == {"ok": True}
+
+
+def test_parse_json_content_reads_json_with_surrounding_text() -> None:
+    client = make_client()
+
+    assert client._parse_json_content('Sure:\n{"ok": true}\nDone.') == {"ok": True}
+
+
+def test_parse_json_content_uses_first_balanced_object() -> None:
+    client = make_client()
+
+    assert client._parse_json_content('first {"ok": true} second {"ok": false}') == {
+        "ok": True
+    }
+
+
+def test_parse_json_content_repairs_trailing_commas() -> None:
+    client = make_client()
+
+    assert client._parse_json_content('{"items": [1, 2,], "ok": true,}') == {
+        "items": [1, 2],
+        "ok": True,
+    }
+
+
+def test_parse_json_content_marks_invalid_json_response() -> None:
+    client = make_client()
+
+    with pytest.raises(AIClientError) as exc_info:
+        client._parse_json_content('{"ok": true')
+
+    assert exc_info.value.code == "INVALID_JSON_RESPONSE"
+    assert "INVALID_JSON_RESPONSE" in str(exc_info.value)

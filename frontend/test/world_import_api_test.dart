@@ -106,4 +106,31 @@ void main() {
       await server.close(force: true);
     }
   });
+
+  test('retryWorldImport posts retry request', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final api = ApiService(baseUrl: 'http://127.0.0.1:${server.port}')
+      ..setToken('test-token');
+
+    try {
+      final requestFuture = server.first;
+      final retryFuture = api.retryWorldImport(taskId: 'task-1');
+      final request = await requestFuture;
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/api/world-imports/task-1/retry');
+      expect(
+        request.headers.value(HttpHeaders.authorizationHeader),
+        'Bearer test-token',
+      );
+      request.response
+        ..statusCode = HttpStatus.accepted
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'id': 'task-1', 'status': 'queued'}));
+      await request.response.close();
+
+      expect(await retryFuture, {'id': 'task-1', 'status': 'queued'});
+    } finally {
+      await server.close(force: true);
+    }
+  });
 }

@@ -47,7 +47,7 @@ def _default_database_url() -> str:
 
 class Settings(BaseSettings):
     app_name: str = "Relationship OS API"
-    app_version: str = "0.8.5"
+    app_version: str = "0.8.6"
     environment: str = Field(default="development")
     api_prefix: str = Field(default="/api")
 

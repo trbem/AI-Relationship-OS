@@ -26,7 +26,7 @@ def test_free_web_extracts_source_verified_candidates(monkeypatch) -> None:
 
     def chat_json(self, **kwargs):
         assert "https://example.test/world/characters" in kwargs["user_prompt"]
-        assert "Target output language: Simplified Chinese" in kwargs["user_prompt"]
+        assert "Target language for user-facing text: Simplified Chinese" in kwargs["user_prompt"]
         return {
             "work": {"title": "Example World", "author": "Anon"},
             "candidates": [
@@ -138,6 +138,114 @@ def test_free_web_extraction_failure_is_structured(monkeypatch) -> None:
         FreeWebWorldSearchService().search_world("Example World", 10)
 
     assert exc_info.value.detail.code == "EXTRACTION_FAILED"
+
+
+def test_free_web_repairs_invalid_json_response(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def collect(self, query: str, language: str = "zh", progress_callback=None):
+        return [_source()], []
+
+    def chat_json(self, **kwargs):
+        prompt = kwargs["user_prompt"]
+        calls.append(prompt)
+        if len(calls) == 1:
+            raise AIClientError(
+                "INVALID_JSON_RESPONSE: malformed",
+                code="INVALID_JSON_RESPONSE",
+                raw_content='Here is JSON: {"work":{"title":"Example World"},"candidates":[{"id":"alice","name":"Alice","sources":[{"title":"Example World characters","url":"https://example.test/world/characters"}],}],"relationships":[]}',
+            )
+        assert "Repair this malformed model output" in prompt
+        return {
+            "work": {"title": "Example World"},
+            "candidates": [
+                {
+                    "id": "alice",
+                    "name": "Alice",
+                    "summary": "A repaired source-backed candidate.",
+                    "sources": [
+                        {
+                            "title": "Example World characters",
+                            "url": "https://example.test/world/characters",
+                        }
+                    ],
+                }
+            ],
+            "relationships": [],
+        }
+
+    monkeypatch.setattr(FreeWebWorldSearchService, "_collect_sources", collect)
+    monkeypatch.setattr(AIClient, "chat_json", chat_json)
+
+    result = FreeWebWorldSearchService().search_world("Example World", 10)
+
+    assert len(calls) == 2
+    assert result["candidates"][0]["name"] == "Alice"
+
+
+def test_free_web_compact_retry_after_repair_failure(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def collect(self, query: str, language: str = "zh", progress_callback=None):
+        return [_source()], []
+
+    def chat_json(self, **kwargs):
+        prompt = kwargs["user_prompt"]
+        calls.append(prompt)
+        if len(calls) <= 2:
+            raise AIClientError(
+                "INVALID_JSON_RESPONSE: malformed",
+                code="INVALID_JSON_RESPONSE",
+                raw_content="not json",
+            )
+        assert "Relationships may be []" in prompt
+        return {
+            "work": {"title": "Example World"},
+            "candidates": [
+                {
+                    "id": "alice",
+                    "name": "Alice",
+                    "summary": "A compact retry candidate.",
+                    "sources": [
+                        {
+                            "title": "Example World characters",
+                            "url": "https://example.test/world/characters",
+                        }
+                    ],
+                }
+            ],
+            "relationships": [],
+        }
+
+    monkeypatch.setattr(FreeWebWorldSearchService, "_collect_sources", collect)
+    monkeypatch.setattr(AIClient, "chat_json", chat_json)
+
+    result = FreeWebWorldSearchService().search_world("Example World", 10)
+
+    assert len(calls) == 3
+    assert result["candidates"][0]["name"] == "Alice"
+
+
+def test_free_web_invalid_json_after_retries_is_structured(monkeypatch) -> None:
+    def collect(self, query: str, language: str = "zh", progress_callback=None):
+        return [_source()], []
+
+    def chat_json(self, **kwargs):
+        raise AIClientError(
+            "INVALID_JSON_RESPONSE: malformed",
+            code="INVALID_JSON_RESPONSE",
+            raw_content="not json",
+        )
+
+    monkeypatch.setattr(FreeWebWorldSearchService, "_collect_sources", collect)
+    monkeypatch.setattr(AIClient, "chat_json", chat_json)
+
+    with pytest.raises(WorldImportError) as exc_info:
+        FreeWebWorldSearchService().search_world("Example World", 10)
+
+    assert exc_info.value.detail.code == "EXTRACTION_FAILED"
+    assert exc_info.value.detail.stage == "extracting"
+    assert "模型没有返回可解析的人物 JSON" in exc_info.value.detail.technical_summary
 
 
 def test_free_web_auto_language_resolves_from_query(monkeypatch) -> None:
