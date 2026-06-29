@@ -608,6 +608,22 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       task = await _resolveWorldImportDisambiguation(task);
       if (!mounted) return;
       if (task.isEmpty) return;
+      while (mounted && _worldImportIsRunning(task)) {
+        final action = await _showRunningWorldImportDialog(task);
+        if (!mounted) return;
+        if (action == 'continue') {
+          task = await _pollWorldImportTask(task, attempts: 120);
+          task = await _resolveWorldImportDisambiguation(task);
+          if (task.isEmpty) return;
+          continue;
+        }
+        if (action == 'cancel') {
+          await widget.apiService.cancelWorldImport(
+            taskId: task['id'].toString(),
+          );
+        }
+        return;
+      }
 
       var result = task['result'] as Map<String, dynamic>? ?? {};
       var candidates = (result['candidates'] as List<dynamic>? ?? [])
@@ -791,18 +807,12 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
   }
 
   Future<Map<String, dynamic>> _pollWorldImportTask(
-    Map<String, dynamic> task,
-  ) async {
+    Map<String, dynamic> task, {
+    int attempts = 60,
+  }) async {
     var current = task;
-    for (var attempt = 0; attempt < 60; attempt++) {
-      final status = current['status']?.toString() ?? '';
-      if (!{
-        'queued',
-        'pending',
-        'running',
-        'searching',
-        'extracting',
-      }.contains(status)) {
+    for (var attempt = 0; attempt < attempts; attempt++) {
+      if (!_worldImportIsRunning(current)) {
         return current;
       }
       await Future<void>.delayed(const Duration(seconds: 1));
@@ -812,6 +822,64 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       );
     }
     return current;
+  }
+
+  bool _worldImportIsRunning(Map<String, dynamic> task) {
+    final status = task['status']?.toString() ?? '';
+    return {
+      'queued',
+      'pending',
+      'running',
+      'searching',
+      'fetching_sources',
+      'extracting',
+    }.contains(status);
+  }
+
+  Future<String?> _showRunningWorldImportDialog(Map<String, dynamic> task) {
+    final result = task['result'] as Map<String, dynamic>? ?? {};
+    final stage = task['stage']?.toString() ?? task['status']?.toString() ?? '';
+    final progress = (task['progress'] as num?)?.toDouble() ?? 0;
+    final summary = result['technical_summary']?.toString();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Import is still running'),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Current stage: $stage'),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(value: progress > 0 ? progress : null),
+              const SizedBox(height: 12),
+              Text(
+                summary?.isNotEmpty == true
+                    ? summary!
+                    : 'The app is still searching pages or extracting characters. This can take a few minutes for large worlds.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'later'),
+            child: const Text('View later'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Cancel task'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'continue'),
+            child: const Text('Keep waiting'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<Map<String, dynamic>> _resolveWorldImportDisambiguation(

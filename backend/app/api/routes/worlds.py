@@ -658,7 +658,18 @@ def _run_world_import_task(task_id: str) -> None:
         task.stage = "searching"
         task.progress = 0.15
         db.commit()
-        result = _search_world_with_provider(task)
+        def progress(stage: str, value: float, summary: str) -> None:
+            current = db.get(WorldImportTask, task_id)
+            if not current or current.status in {"discarded", "completed"}:
+                return
+            payload = _json(current.result_json, {})
+            payload["technical_summary"] = summary[:300]
+            current.result_json = json.dumps(payload, ensure_ascii=False)
+            current.stage = stage
+            current.progress = max(current.progress or 0.0, min(value, 0.95))
+            db.commit()
+
+        result = _search_world_with_provider(task, progress)
         task.result_json = json.dumps(result, ensure_ascii=False)
         if result.get("status_hint") == "needs_disambiguation":
             task.status = "needs_disambiguation"
@@ -700,7 +711,10 @@ def _fail_task(task: WorldImportTask, error: dict) -> None:
     task.error = json.dumps(error, ensure_ascii=False)
 
 
-def _search_world_with_provider(task: WorldImportTask) -> dict:
+def _search_world_with_provider(
+    task: WorldImportTask,
+    progress_callback=None,
+) -> dict:
     result = _json(task.result_json, {})
     provider = result.get("provider") or "free_web"
     language = result.get("language") or "zh"
@@ -711,6 +725,7 @@ def _search_world_with_provider(task: WorldImportTask) -> dict:
             task.query,
             task.requested_limit,
             language,
+            progress_callback,
         )
         provider = "free_web"
     data["provider"] = provider

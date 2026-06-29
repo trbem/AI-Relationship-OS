@@ -223,7 +223,13 @@ def test_curated_versions_are_separate_and_limited() -> None:
 
 
 def test_online_preview_confirm_deduplicates(monkeypatch) -> None:
-    def fake_search(self, query: str, limit: int, language: str = "zh") -> dict:
+    def fake_search(
+        self,
+        query: str,
+        limit: int,
+        language: str = "zh",
+        progress_callback=None,
+    ) -> dict:
         return {
             "query": query,
             "partial": True,
@@ -281,7 +287,13 @@ def test_online_preview_confirm_deduplicates(monkeypatch) -> None:
 
 
 def test_online_preview_uses_generated_fallback_and_imports_relationships(monkeypatch) -> None:
-    def empty_search(self, query: str, limit: int, language: str = "zh") -> dict:
+    def empty_search(
+        self,
+        query: str,
+        limit: int,
+        language: str = "zh",
+        progress_callback=None,
+    ) -> dict:
         return {
             "query": query,
             "partial": True,
@@ -371,7 +383,13 @@ def test_online_preview_uses_generated_fallback_and_imports_relationships(monkey
 
 
 def test_world_import_defaults_to_free_web_provider(monkeypatch) -> None:
-    def fake_search(self, query: str, limit: int, language: str = "zh") -> dict:
+    def fake_search(
+        self,
+        query: str,
+        limit: int,
+        language: str = "zh",
+        progress_callback=None,
+    ) -> dict:
         return {
             "query": query,
             "provider": "free_web",
@@ -425,7 +443,13 @@ def test_world_import_defaults_to_free_web_provider(monkeypatch) -> None:
 def test_world_import_passes_language_to_free_web(monkeypatch) -> None:
     seen: dict[str, str] = {}
 
-    def fake_search(self, query: str, limit: int, language: str = "zh") -> dict:
+    def fake_search(
+        self,
+        query: str,
+        limit: int,
+        language: str = "zh",
+        progress_callback=None,
+    ) -> dict:
         seen["language"] = language
         return {
             "query": query,

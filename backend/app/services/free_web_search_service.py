@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx
@@ -21,6 +21,8 @@ from app.services.openai_web_search_service import (
 SEARCH_TIMEOUT_SECONDS = 20.0
 FETCH_TIMEOUT_SECONDS = 12.0
 MAX_SEARCH_SOURCES = 20
+MAX_FETCHED_SOURCES = 10
+ProgressCallback = Callable[[str, float, str], None]
 
 
 @dataclass
@@ -53,11 +55,17 @@ class FreeWebWorldSearchService:
         query: str,
         limit: int,
         language: str = "zh",
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         limit = max(1, min(50, int(limit)))
         target_language = _resolve_language(language, query)
         accessed_at = datetime.now(timezone.utc).isoformat()
-        sources, failures = self._collect_sources(query, target_language)
+        _report(progress_callback, "searching", 0.18, "collecting web search results")
+        sources, failures = self._collect_sources(
+            query,
+            target_language,
+            progress_callback,
+        )
         if not sources:
             raise WorldImportError(
                 "NO_RELEVANT_WORK",
@@ -67,6 +75,12 @@ class FreeWebWorldSearchService:
             )
 
         try:
+            _report(
+                progress_callback,
+                "extracting",
+                0.72,
+                "extracting characters with current AI model",
+            )
             payload = AIClient().chat_json(
                 system_prompt=(
                     "You are a character-world import assistant. Extract only "
@@ -84,6 +98,14 @@ class FreeWebWorldSearchService:
                 timeout_seconds=120,
             )
         except AIClientError as exc:
+            text = str(exc)
+            if "timed out" in text.lower() or "timeout" in text.lower():
+                raise WorldImportError(
+                    "SEARCH_TIMEOUT",
+                    stage="extracting",
+                    retryable=True,
+                    technical_summary=text[:300],
+                ) from exc
             raise WorldImportError(
                 "EXTRACTION_FAILED",
                 stage="extracting",
@@ -191,11 +213,12 @@ class FreeWebWorldSearchService:
         self,
         query: str,
         language: str = "zh",
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[WebSource], list[dict[str, Any]]]:
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 RelationshipOS/0.8.4"
+                "AppleWebKit/537.36 RelationshipOS/0.8.5"
             )
         }
         failures: list[dict[str, Any]] = []
@@ -222,15 +245,32 @@ class FreeWebWorldSearchService:
                 if len(_dedupe_sources(candidates)) >= MAX_SEARCH_SOURCES:
                     break
 
-            deduped = _dedupe_sources(candidates)[:MAX_SEARCH_SOURCES]
+            deduped = _rank_sources(_dedupe_sources(candidates), query, language)
+            deduped = deduped[:MAX_FETCHED_SOURCES]
             enriched: list[WebSource] = []
+            _report(
+                progress_callback,
+                "fetching_sources",
+                0.38,
+                f"fetching {len(deduped)} high quality source pages",
+            )
             for source in deduped:
                 try:
                     enriched.append(_fetch_excerpt(client, source))
                 except httpx.HTTPError as exc:
                     failures.append(_failure(source.url, "fetching", exc))
                     enriched.append(source)
-        return enriched[:MAX_SEARCH_SOURCES], failures
+        return enriched[:MAX_FETCHED_SOURCES], failures
+
+
+def _report(
+    progress_callback: ProgressCallback | None,
+    stage: str,
+    progress: float,
+    summary: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(stage, progress, summary)
 
 
 def _resolve_language(language: str, query: str) -> str:
@@ -254,11 +294,11 @@ def _search_queries(query: str, language: str = "zh") -> list[str]:
         ]
     else:
         suffixes = [
-            "人物",
-            "角色",
-            "主要人物",
-            "人物关系",
-            "角色介绍",
+            "\u4eba\u7269",
+            "\u89d2\u8272",
+            "\u4e3b\u8981\u4eba\u7269",
+            "\u4eba\u7269\u5173\u7cfb",
+            "\u89d2\u8272\u4ecb\u7ecd",
             "characters list",
         ]
     values = [clean, *[f"{clean} {suffix}" for suffix in suffixes]]
@@ -399,13 +439,68 @@ def _is_low_quality_source(url: str, title: str) -> bool:
         "youtu.be",
         "www.tiktok.com",
         "tiktok.com",
+        "wenku.baidu.com",
+        "zhuanlan.zhihu.com",
     }:
         return True
     if "youtube.com" in host or "youtu.be" in host:
         return True
+    if "bilibili.com" in host and ("/video/" in path or "/bangumi/" in path):
+        return True
+    if host.endswith("zhihu.com"):
+        return True
+    if "baidu.com" in host and "wenku" in host:
+        return True
     if any(token in path for token in ["/video/", "/watch", "/shorts/"]):
         return True
     return "trailer" in title_value or "episode clip" in title_value
+
+
+def _rank_sources(
+    sources: list[WebSource],
+    query: str,
+    language: str,
+) -> list[WebSource]:
+    return sorted(
+        sources,
+        key=lambda source: _source_score(source, query, language),
+        reverse=True,
+    )
+
+
+def _source_score(source: WebSource, query: str, language: str) -> int:
+    parsed = urlparse(source.url)
+    host = parsed.netloc.lower()
+    text = f"{source.title} {source.snippet} {source.url}".lower()
+    score = 0
+    query_terms = [
+        term.lower()
+        for term in re.split(r"\s+", query.strip())
+        if len(term.strip()) >= 2
+    ]
+    if any(term and term in text for term in query_terms):
+        score += 5
+    priority_terms = [
+        "character",
+        "characters",
+        "cast",
+        "biograph",
+        "wiki",
+        "\u4eba\u7269",
+        "\u89d2\u8272",
+        "\u767b\u573a\u4eba\u7269",
+        "\u4e3b\u8981\u4eba\u7269",
+    ]
+    score += sum(3 for term in priority_terms if term in text)
+    if "wikipedia.org" in host or "wikidata.org" in host:
+        score += 4
+    if "baike.baidu.com" in host:
+        score += 4
+    if language == "zh" and any(token in text for token in ["\u4eba\u7269", "\u89d2\u8272"]):
+        score += 4
+    if any(host.endswith(domain) for domain in ["sohu.com", "baidu.com", "bilibili.com"]):
+        score -= 2
+    return score
 
 
 def _clean_url(url: str) -> str:

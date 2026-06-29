@@ -730,6 +730,15 @@ class ApiService {
     ) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> cancelWorldImport({
+    required String taskId,
+  }) async {
+    return await _jsonRequest(
+      'POST',
+      '/api/world-imports/${Uri.encodeComponent(taskId)}/cancel',
+    ) as Map<String, dynamic>;
+  }
+
   Future<dynamic> _jsonRequest(
     String method,
     String path, {
