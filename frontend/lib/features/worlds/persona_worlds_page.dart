@@ -429,6 +429,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       text: _world?['name']?.toString() ?? '',
     );
     double limit = 20;
+    var language = 'zh';
     var importMode = currentWorldId == null ? 'create' : 'append';
     final request = await showDialog<
         ({
@@ -437,6 +438,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
           String mode,
           String name,
           String provider,
+          String language,
         })>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -454,6 +456,39 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                     labelText: 'Topic',
                     hintText: 'e.g. Greek mythology, Three Kingdoms',
                   ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: language,
+                  decoration: const InputDecoration(
+                    labelText: 'Language',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'zh',
+                      child: Text('Chinese / 中文'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'auto',
+                      child: Text('Auto detect'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'en',
+                      child: Text('English'),
+                    ),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => language = value ?? 'zh'),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  language == 'zh'
+                      ? 'Chinese mode translates and normalizes extracted profiles into Chinese.'
+                      : language == 'en'
+                          ? 'English mode keeps extracted profiles in English.'
+                          : 'Auto mode chooses Chinese for Chinese queries and English otherwise.',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
@@ -547,6 +582,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                     mode: importMode,
                     name: trimmedName.isEmpty ? trimmedQuery : trimmedName,
                     provider: provider,
+                    language: language,
                   ),
                 );
               },
@@ -566,6 +602,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
         query: request.query,
         limit: request.limit,
         provider: request.provider,
+        language: request.language,
       );
       task = await _pollWorldImportTask(task);
       task = await _resolveWorldImportDisambiguation(task);
@@ -785,6 +822,16 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
       final result = current['result'] as Map<String, dynamic>? ?? {};
       final options = (result['disambiguation_options'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
+      final candidates = (result['candidates'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      if (options.length == 1 && candidates.isNotEmpty) {
+        current = await widget.apiService.resolveWorldImport(
+          taskId: current['id'].toString(),
+          selectedOptionId: options.first['id'].toString(),
+        );
+        current = await _pollWorldImportTask(current);
+        continue;
+      }
       final selectedOptionId = await _chooseWorldImportDisambiguation(
         current,
         options,
@@ -808,11 +855,14 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
   ) {
     var selectedId =
         options.isNotEmpty ? options.first['id']?.toString() : null;
+    final result = task['result'] as Map<String, dynamic>? ?? {};
+    final candidateCount =
+        (result['candidates'] as List<dynamic>? ?? const []).length;
     return showDialog<String?>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Choose work version'),
+          title: Text('Choose work version (${options.length})'),
           content: SizedBox(
             width: 680,
             height: 460,
@@ -827,7 +877,7 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
                     child: ListView(
                       children: [
                         Text(
-                          '"${task['query'] ?? ''}" may refer to multiple versions. Choose one to continue. Cancel keeps the task and will not generate unverified candidates.',
+                          '"${task['query'] ?? ''}" may refer to multiple versions. Already found $candidateCount candidate(s); choose one to continue. Cancel keeps the task and will not generate unverified candidates.',
                         ),
                         const SizedBox(height: 12),
                         for (final option in options)
@@ -917,12 +967,34 @@ class _PersonaWorldsPageState extends State<PersonaWorldsPage> {
     List<String> errors,
     List<Map<String, dynamic>> sourceFailures,
   ) {
+    final status = task['status']?.toString() ?? '';
+    final hasSourceFailures = sourceFailures.isNotEmpty;
+    final message = task['error']?.toString();
+    final summary = message != null && message.isNotEmpty
+        ? message
+        : hasSourceFailures
+            ? 'Found web pages, but no character information could be extracted.'
+            : status == 'failed'
+                ? 'No relevant work was found. Try a more specific title or retry later.'
+                : 'No importable candidates found.';
     return ListView(
       children: [
-        Text(task['error']?.toString() ?? 'No importable candidates found.'),
+        ListTile(
+          leading: const Icon(Icons.info_outline),
+          title: Text(
+            status == 'failed' ? 'Import failed' : 'No importable characters',
+          ),
+          subtitle: Text(summary),
+        ),
         if (errors.isNotEmpty) ...[
           const Divider(height: 16),
-          Text(errors.join('\n')),
+          ExpansionTile(
+            leading: const Icon(Icons.error_outline),
+            title: const Text('Error details'),
+            children: [
+              ListTile(subtitle: Text(errors.join('\n'))),
+            ],
+          ),
         ],
         if (sourceFailures.isNotEmpty) ...[
           const Divider(height: 16),

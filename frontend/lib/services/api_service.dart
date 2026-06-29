@@ -594,11 +594,17 @@ class ApiService {
     required String query,
     int limit = 20,
     String provider = 'free_web',
+    String language = 'zh',
   }) async {
     return await _jsonRequest(
       'POST',
       '/api/world-imports/search',
-      body: {'query': query, 'limit': limit, 'provider': provider},
+      body: {
+        'query': query,
+        'limit': limit,
+        'provider': provider,
+        'language': language,
+      },
     ) as Map<String, dynamic>;
   }
 

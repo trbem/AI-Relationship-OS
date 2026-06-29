@@ -48,10 +48,16 @@ class FreeWebWorldSearchService:
     on OpenAI native Web Search or on a browser engine.
     """
 
-    def search_world(self, query: str, limit: int) -> dict[str, Any]:
+    def search_world(
+        self,
+        query: str,
+        limit: int,
+        language: str = "zh",
+    ) -> dict[str, Any]:
         limit = max(1, min(50, int(limit)))
+        target_language = _resolve_language(language, query)
         accessed_at = datetime.now(timezone.utc).isoformat()
-        sources, failures = self._collect_sources(query)
+        sources, failures = self._collect_sources(query, target_language)
         if not sources:
             raise WorldImportError(
                 "NO_RELEVANT_WORK",
@@ -68,7 +74,12 @@ class FreeWebWorldSearchService:
                     "sources. Return a single JSON object. Do not invent URLs "
                     "and do not reproduce long copyrighted text."
                 ),
-                user_prompt=_extraction_prompt(query, limit, sources),
+                user_prompt=_extraction_prompt(
+                    query,
+                    limit,
+                    sources,
+                    target_language,
+                ),
                 temperature=0.1,
                 timeout_seconds=120,
             )
@@ -92,15 +103,30 @@ class FreeWebWorldSearchService:
         )
         normalized["provider"] = "free_web"
         normalized["source_type"] = "free_web"
+        normalized["language"] = target_language
         normalized["source_failures"] = failures
         normalized["partial"] = bool(failures)
+        if _needs_language_rewrite(normalized, target_language):
+            normalized = self._rewrite_language(
+                normalized,
+                query=query,
+                limit=limit,
+                accessed_at=accessed_at,
+                sources=sources,
+                language=target_language,
+                failures=failures,
+            )
         for candidate in normalized.get("candidates", []):
             candidate["source_type"] = "free_web"
             candidate["source_ref"] = candidate["id"]
         for relationship in normalized.get("relationships", []):
             if relationship.get("sources"):
                 relationship["source_type"] = "free_web"
-        if normalized["disambiguation_options"]:
+        disambiguation_options = normalized.get("disambiguation_options", [])
+        if len(disambiguation_options) == 1 and normalized.get("candidates"):
+            normalized["selected_disambiguation"] = disambiguation_options[0]
+            normalized["disambiguation_options"] = []
+        elif disambiguation_options:
             normalized["status_hint"] = "needs_disambiguation"
             return normalized
         if not normalized["work"].get("title"):
@@ -119,11 +145,57 @@ class FreeWebWorldSearchService:
             )
         return normalized
 
-    def _collect_sources(self, query: str) -> tuple[list[WebSource], list[dict[str, Any]]]:
+    def _rewrite_language(
+        self,
+        normalized: dict[str, Any],
+        *,
+        query: str,
+        limit: int,
+        accessed_at: str,
+        sources: list[WebSource],
+        language: str,
+        failures: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        try:
+            payload = AIClient().chat_json(
+                system_prompt=(
+                    "Rewrite the supplied character-world JSON into the target "
+                    "language. Preserve ids, source URLs, source titles, "
+                    "verification status, confidence values, and relationships. "
+                    "Do not add fake sources or new characters."
+                ),
+                user_prompt=_rewrite_prompt(normalized, language),
+                temperature=0.0,
+                timeout_seconds=90,
+            )
+        except AIClientError:
+            return normalized
+        rewritten = _normalize_world_payload(
+            payload,
+            query=query,
+            limit=limit,
+            accessed_at=accessed_at,
+            response_citations=[
+                {"title": source.title, "url": source.url}
+                for source in sources
+            ],
+        )
+        rewritten["provider"] = "free_web"
+        rewritten["source_type"] = "free_web"
+        rewritten["language"] = language
+        rewritten["source_failures"] = failures
+        rewritten["partial"] = bool(failures)
+        return rewritten
+
+    def _collect_sources(
+        self,
+        query: str,
+        language: str = "zh",
+    ) -> tuple[list[WebSource], list[dict[str, Any]]]:
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 RelationshipOS/0.8.2"
+                "AppleWebKit/537.36 RelationshipOS/0.8.4"
             )
         }
         failures: list[dict[str, Any]] = []
@@ -133,18 +205,20 @@ class FreeWebWorldSearchService:
             follow_redirects=True,
             headers=headers,
         ) as client:
-            for search_query in _search_queries(query):
+            for search_query in _search_queries(query, language):
                 try:
                     candidates.extend(_duckduckgo_search(client, search_query))
                 except httpx.HTTPError as exc:
                     failures.append(_failure("duckduckgo", "searching", exc))
-                try:
-                    candidates.extend(_wikipedia_search(client, search_query, "zh"))
-                    candidates.extend(_wikipedia_search(client, search_query, "en"))
-                    candidates.extend(_wikidata_search(client, search_query, "zh"))
-                    candidates.extend(_wikidata_search(client, search_query, "en"))
-                except httpx.HTTPError as exc:
-                    failures.append(_failure("wikipedia/wikidata", "searching", exc))
+                wiki_langs = ["zh", "en"] if language == "zh" else ["en", "zh"]
+                for wiki_lang in wiki_langs:
+                    try:
+                        candidates.extend(_wikipedia_search(client, search_query, wiki_lang))
+                        candidates.extend(_wikidata_search(client, search_query, wiki_lang))
+                    except httpx.HTTPError as exc:
+                        failures.append(
+                            _failure(f"wikipedia/wikidata:{wiki_lang}", "searching", exc)
+                        )
                 if len(_dedupe_sources(candidates)) >= MAX_SEARCH_SOURCES:
                     break
 
@@ -159,14 +233,34 @@ class FreeWebWorldSearchService:
         return enriched[:MAX_SEARCH_SOURCES], failures
 
 
-def _search_queries(query: str) -> list[str]:
+def _resolve_language(language: str, query: str) -> str:
+    value = (language or "zh").strip().lower()
+    if value == "auto":
+        return "zh" if re.search(r"[\u4e00-\u9fff]", query) else "en"
+    if value in {"zh", "en"}:
+        return value
+    return "zh"
+
+
+def _search_queries(query: str, language: str = "zh") -> list[str]:
     clean = query.strip()
-    suffixes = [
-        "人物 角色 列表",
-        "主要人物",
-        "角色介绍",
-        "characters list cast",
-    ]
+    if language == "en":
+        suffixes = [
+            "characters",
+            "characters list",
+            "main characters",
+            "cast",
+            "relationships",
+        ]
+    else:
+        suffixes = [
+            "人物",
+            "角色",
+            "主要人物",
+            "人物关系",
+            "角色介绍",
+            "characters list",
+        ]
     values = [clean, *[f"{clean} {suffix}" for suffix in suffixes]]
     return list(dict.fromkeys(values))
 
@@ -274,7 +368,12 @@ def _dedupe_sources(values: list[WebSource]) -> list[WebSource]:
     for item in values:
         url = _clean_url(item.url)
         title_key = re.sub(r"\s+", " ", item.title).strip().lower()
-        if not url or url in seen_urls or title_key in seen_titles:
+        if (
+            not url
+            or url in seen_urls
+            or title_key in seen_titles
+            or _is_low_quality_source(url, item.title)
+        ):
             continue
         seen_urls.add(url)
         seen_titles.add(title_key)
@@ -286,6 +385,27 @@ def _dedupe_sources(values: list[WebSource]) -> list[WebSource]:
             )
         )
     return result
+
+
+def _is_low_quality_source(url: str, title: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    title_value = title.lower()
+    if host in {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+        "www.tiktok.com",
+        "tiktok.com",
+    }:
+        return True
+    if "youtube.com" in host or "youtu.be" in host:
+        return True
+    if any(token in path for token in ["/video/", "/watch", "/shorts/"]):
+        return True
+    return "trailer" in title_value or "episode clip" in title_value
 
 
 def _clean_url(url: str) -> str:
@@ -314,8 +434,18 @@ def _failure(source: str, stage: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _extraction_prompt(query: str, limit: int, sources: list[WebSource]) -> str:
+def _language_label(language: str) -> str:
+    return "Simplified Chinese" if language == "zh" else "English"
+
+
+def _extraction_prompt(
+    query: str,
+    limit: int,
+    sources: list[WebSource],
+    language: str = "zh",
+) -> str:
     source_payload = [source.to_prompt_dict() for source in sources]
+    target = _language_label(language)
     return f"""
 The user wants to import a character world for: {query}
 
@@ -324,6 +454,14 @@ identify the work/world and extract up to {limit} character candidates. If the
 sources only support fewer people, return fewer people. Every character must
 cite at least one URL from the supplied sources. Do not invent URLs. Do not copy
 long original passages; only output short factual summaries.
+
+Target output language: {target}.
+All user-facing fields must use {target}: work title/summary, disambiguation
+title/reason, character names when a common translated name exists, aliases,
+factions, summaries, traits, motivations, values, abilities, communication,
+background, and relationship descriptions. Source titles and URLs may stay in
+their original language. If sources are English but the target is Simplified
+Chinese, translate and summarize the facts into Chinese.
 
 Source JSON:
 {json.dumps(source_payload, ensure_ascii=False)}
@@ -356,6 +494,44 @@ Return only one JSON object with this shape:
   ]
 }}
 """
+
+
+def _rewrite_prompt(payload: dict[str, Any], language: str) -> str:
+    target = _language_label(language)
+    return f"""
+Target output language: {target}.
+Rewrite this JSON so all user-facing text uses the target language. Preserve
+ids, URLs, source arrays, verification metadata, and confidence values exactly
+when possible. Return only the rewritten JSON object.
+
+JSON:
+{json.dumps(payload, ensure_ascii=False)}
+"""
+
+
+def _needs_language_rewrite(payload: dict[str, Any], language: str) -> bool:
+    if language != "zh":
+        return False
+    texts: list[str] = []
+    work = payload.get("work") if isinstance(payload.get("work"), dict) else {}
+    texts.extend(str(work.get(key) or "") for key in ("title", "summary", "medium"))
+    for candidate in payload.get("candidates", [])[:8]:
+        if not isinstance(candidate, dict):
+            continue
+        texts.extend(
+            str(candidate.get(key) or "")
+            for key in ("name", "summary", "faction", "background")
+        )
+        for key in ("traits", "motivations", "values", "abilities"):
+            value = candidate.get(key)
+            if isinstance(value, list):
+                texts.extend(str(item) for item in value[:3])
+    combined = " ".join(texts).strip()
+    if len(combined) < 40:
+        return False
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", combined))
+    alpha_count = len(re.findall(r"[A-Za-z]", combined))
+    return alpha_count > 80 and cjk_count < max(8, alpha_count // 8)
 
 
 class _DuckDuckGoParser(HTMLParser):

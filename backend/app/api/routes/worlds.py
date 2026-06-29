@@ -106,6 +106,7 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=255)
     limit: int = Field(default=50, ge=1, le=50)
     provider: str = Field(default="free_web", pattern="^(free_web|openai_web_search)$")
+    language: str = Field(default="zh", pattern="^(auto|zh|en)$")
 
 
 class ConfirmImportRequest(BaseModel):
@@ -594,6 +595,7 @@ def search_world_import(
             {
                 "query": request.query,
                 "provider": request.provider,
+                "language": request.language,
                 "candidates": [],
                 "relationships": [],
                 "errors": [],
@@ -701,12 +703,18 @@ def _fail_task(task: WorldImportTask, error: dict) -> None:
 def _search_world_with_provider(task: WorldImportTask) -> dict:
     result = _json(task.result_json, {})
     provider = result.get("provider") or "free_web"
+    language = result.get("language") or "zh"
     if provider == "openai_web_search":
         data = OpenAIWebSearchService().search_world(task.query, task.requested_limit)
     else:
-        data = FreeWebWorldSearchService().search_world(task.query, task.requested_limit)
+        data = FreeWebWorldSearchService().search_world(
+            task.query,
+            task.requested_limit,
+            language,
+        )
         provider = "free_web"
     data["provider"] = provider
+    data["language"] = language
     return data
 
 
@@ -793,6 +801,29 @@ def resolve_world_import(
     )
     if selected is None:
         raise HTTPException(status_code=404, detail="未找到该作品候选")
+    result["selected_disambiguation"] = selected
+    result["disambiguation_options"] = []
+    result.pop("status_hint", None)
+    work = result.get("work") if isinstance(result.get("work"), dict) else {}
+    work.update(
+        {
+            "title": selected.get("title") or work.get("title") or task.query,
+            "author": selected.get("author") or work.get("author") or "",
+            "medium": selected.get("medium") or work.get("medium") or "",
+        }
+    )
+    if selected.get("reason") and not work.get("summary"):
+        work["summary"] = selected["reason"]
+    result["work"] = work
+    if result.get("candidates"):
+        task.query = selected.get("title") or task.query
+        task.result_json = json.dumps(result, ensure_ascii=False)
+        task.status = "partial" if result.get("partial") else "preview"
+        task.stage = "preview"
+        task.progress = 1.0
+        task.error = None
+        db.commit()
+        return _task_dict(task)
     task.query = selected.get("title") or task.query
     task.status = "queued"
     task.stage = "queued"
@@ -977,7 +1008,7 @@ def _resolve_import_destination(
         name=name[:255],
         theme=str(work.get("medium") or "AI 联网导入")[:255],
         world_type="fictional",
-        source_type="openai_web_search",
+        source_type=str(result.get("provider") or result.get("source_type") or "free_web")[:64],
         version=str(work.get("version") or "")[:64] or None,
         description=work.get("summary") or None,
     )
